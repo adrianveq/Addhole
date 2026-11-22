@@ -20,6 +20,7 @@ export function buildModeGizmo() {
 
   const entries: Record<string, { swapToBold: (bold: boolean) => void }> = {}
   const moveArrowGroups: Partial<Record<"mx" | "my" | "mz", THREE.Group>> = {}
+  const scaleHandleGroups: Partial<Record<"sx" | "sy" | "sz", THREE.Group>> = {}
   const ringUpdates: Array<(toCamLocal: THREE.Vector3) => void> = []
   const toCamLocal = new THREE.Vector3()
   const invRootQuat = new THREE.Quaternion()
@@ -178,6 +179,7 @@ export function buildModeGizmo() {
     g.add(shaft, cube, hit)
     pointHandleAlong(g, axis === "sx" ? "x" : axis === "sy" ? "y" : "z")
     scaleGroup.add(g)
+    scaleHandleGroups[axis] = g
 
     entries[axis] = {
       swapToBold: (b) => {
@@ -220,6 +222,14 @@ export function buildModeGizmo() {
       if (!g) return null
       g.updateMatrixWorld(true)
       const tip = new THREE.Vector3(0, 26 + 2.75, 0)
+      g.localToWorld(tip)
+      return tip
+    },
+    getScaleAxisTipWorld: (axis: "sx" | "sy" | "sz") => {
+      const g = scaleHandleGroups[axis]
+      if (!g) return null
+      g.updateMatrixWorld(true)
+      const tip = new THREE.Vector3(0, 23 + 1.2, 0)
       g.localToWorld(tip)
       return tip
     },

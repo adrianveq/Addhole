@@ -53,13 +53,51 @@ const showsDimensionCallout = (ud: {
 
 const dimensionHandleActive = (id: string | null) =>
   !!id &&
-  (id === "move-z" ||
+  (id === "move-x" ||
+    id === "move-y" ||
+    id === "move-z" ||
     id.startsWith("corner-") ||
     id.startsWith("height-z") ||
     id.startsWith("side-x") ||
     id.startsWith("side-y"))
 
-/** Snapped vertical offset for the move-Z label (same step as position snapping). */
+const MOVE_GIZMO_TO_PIN: Record<string, "move-x" | "move-y" | "move-z"> = {
+  mx: "move-x",
+  my: "move-y",
+  mz: "move-z",
+}
+const MOVE_PIN_TO_GIZMO: Record<string, "mx" | "my" | "mz"> = {
+  "move-x": "mx",
+  "move-y": "my",
+  "move-z": "mz",
+}
+const MOVE_PIN_TO_AXIS: Record<string, DimAxis> = {
+  "move-x": "x",
+  "move-y": "y",
+  "move-z": "z",
+}
+const SCALE_GIZMO_TO_PIN: Record<string, "scale-x" | "scale-y" | "scale-z"> = {
+  sx: "scale-x",
+  sy: "scale-y",
+  sz: "scale-z",
+}
+const SCALE_PIN_TO_AXIS: Record<string, DimAxis> = {
+  "scale-x": "x",
+  "scale-y": "y",
+  "scale-z": "z",
+}
+const SCALE_PIN_TO_GIZMO: Record<string, "sx" | "sy" | "sz"> = {
+  "scale-x": "sx",
+  "scale-y": "sy",
+  "scale-z": "sz",
+}
+
+const isMovePin = (id: string | null | undefined): id is "move-x" | "move-y" | "move-z" =>
+  id === "move-x" || id === "move-y" || id === "move-z"
+const isScaleGizmoPin = (id: string | null | undefined): id is "scale-x" | "scale-y" | "scale-z" =>
+  id === "scale-x" || id === "scale-y" || id === "scale-z"
+
+/** Snapped length/offset for on-canvas numeric labels (same step as position snapping). */
 function formatOffsetDisplay(offsetCm: number, unit: LengthUnit) {
   const snapped = snapCm(offsetCm)
   return fmt(unit === "mm" ? snapped * 10 : snapped)
@@ -84,7 +122,11 @@ interface DimEdgeView {
 interface DimCalloutView {
   id: string
   edges: DimEdgeView[]
+  /** Move-offset along drag axis (centimetres). */
   moveDeltaCm?: number
+  /** Absolute size along one axis (centimetres, full span). */
+  valueCm?: number
+  labelAxis?: DimAxis
   labelX?: number
   labelY?: number
   labelOnly?: boolean
@@ -188,9 +230,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     /** Shift was held (at least once) during a corner scale drag. */
     proportionalDrag: false,
     snapshot: null as null | { id: string; length: Partial<Record<DimAxis, number>> },
-    draggingMz: false,
-    moveZDraftText: undefined as string | undefined,
-    moveZSession: null as null | {
+    draggingMoveAxis: false,
+    draggingScaleGizmo: false,
+    draggingRigScale: false,
+    moveAxisSession: null as null | {
       ids: string[]
       startTransforms: Record<
         string,
@@ -203,18 +246,30 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       >
       moveAxis: THREE.Vector3
     },
+    scaleGizmoSession: null as null | {
+      ids: string[]
+      handleId: string
+      sign: THREE.Vector3
+      symmetric: boolean
+    },
   })
   const calloutGeomRef = React.useRef<DimCalloutView | null>(null)
   const [cornerCallout, setCornerCallout] = React.useState<DimCalloutView | null>(null)
   const [dimDraft, setDimDraft] = React.useState<Partial<Record<DimAxis, string>>>({})
-  const moveZInputRef = React.useRef<HTMLInputElement>(null)
-  const clearMoveZDraftRef = React.useRef<() => void>(() => {})
-  clearMoveZDraftRef.current = () => {
-    cornerUiRef.current.moveZDraftText = undefined
+  const dimDraftRef = React.useRef(dimDraft)
+  dimDraftRef.current = dimDraft
+  const cornerCalloutIdRef = React.useRef<string | null>(null)
+  cornerCalloutIdRef.current = cornerCallout?.id ?? null
+  const transformLabelInputRef = React.useRef<HTMLInputElement | null>(null)
+  const cornerDimInputRefs = React.useRef<Partial<Record<DimAxis, HTMLInputElement | null>>>({})
+  const activeDragRef = React.useRef<{
+    scaleDrag?: { handleId: string; sign: THREE.Vector3; kind: string } | null
+  } | null>(null)
+  const clearAxisDraft = (axis: DimAxis) => {
     setDimDraft((draft) => {
-      if (draft.z === undefined) return draft
+      if (draft[axis] === undefined) return draft
       const next = { ...draft }
-      delete next.z
+      delete next[axis]
       return next
     })
   }
@@ -566,17 +621,47 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           moveAxis: opts?.moveAxis?.clone() ?? null,
           rotBasis: basis ?? null,
         }
-        if (axis === "mz" && opts?.moveAxis) {
-          cornerUiRef.current.pinnedId = "move-z"
+        if (
+          (axis === "mx" || axis === "my" || axis === "mz") &&
+          opts?.moveAxis
+        ) {
+          const pin = MOVE_GIZMO_TO_PIN[axis]
+          cornerUiRef.current.pinnedId = pin
           cornerUiRef.current.editing = null
-          cornerUiRef.current.draggingMz = true
-          clearMoveZDraftRef.current()
-          cornerUiRef.current.moveZSession = {
+          cornerUiRef.current.draggingMoveAxis = true
+          const pinAxis = MOVE_PIN_TO_AXIS[pin]
+          clearAxisDraft(pinAxis)
+          cornerUiRef.current.moveAxisSession = {
             ids: [...curSelIds],
             startTransforms,
             moveAxis: opts.moveAxis.clone(),
           }
         }
+        if (
+          opts?.scaleDrag &&
+          axis !== "sx" &&
+          axis !== "sy" &&
+          axis !== "sz"
+        ) {
+          cornerUiRef.current.draggingRigScale = true
+          cornerUiRef.current.pinnedId = opts.scaleDrag.handleId
+        }
+        if (
+          opts?.scaleDrag &&
+          (axis === "sx" || axis === "sy" || axis === "sz")
+        ) {
+          const pin = SCALE_GIZMO_TO_PIN[axis]
+          cornerUiRef.current.pinnedId = pin
+          cornerUiRef.current.draggingScaleGizmo = true
+          cornerUiRef.current.scaleGizmoSession = {
+            ids: [...curSelIds],
+            handleId: axis,
+            sign: opts.scaleDrag.sign.clone(),
+            symmetric: false,
+          }
+          clearAxisDraft(SCALE_PIN_TO_AXIS[pin])
+        }
+        activeDragRef.current = activeDrag
         return true
       }
 
@@ -938,7 +1023,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           hov = hitUd?.handleId || null
           if (
             hov &&
-            (hov === "move-z" || showsDimensionCallout(hitUd))
+            (hov === "move-z" || showsDimensionCallout(hitUd)) // rig move-z handle
           ) {
             cornerUiRef.current.hoverId = hov
           } else if (!hov && nearCallout(e.clientX, e.clientY)) {
@@ -972,6 +1057,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         return
       }
 
+      activeDragRef.current = activeDrag
       const {
         axis,
         pivotWorld,
@@ -984,6 +1070,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const snap = gizmoSnapEnabled(e)
 
       if (activeDrag.scaleDrag) {
+        if (cornerUiRef.current.editing) return
         const { kind, sign, center, quat, hx, hy, hz, pullLocal } = activeDrag.scaleDrag
         if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return
         const localDelta = hitPt.clone().sub(startHit).applyQuaternion(quat.clone().invert())
@@ -1017,6 +1104,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               )
         const { fx, fy, fz } = scaled
         const anchorWorld = scaled.anchor.clone().applyQuaternion(quat).add(center)
+        if (cornerUiRef.current.scaleGizmoSession) {
+          cornerUiRef.current.scaleGizmoSession.symmetric = symmetric
+        }
         if (kind === "corner" && activeDrag.scaleDrag.baseLengths) {
           const base = activeDrag.scaleDrag.baseLengths
           if (e.shiftKey) {
@@ -1063,12 +1153,16 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       }
 
       if (activeDrag.moveAxis) {
-        cornerUiRef.current.draggingMz = activeDrag.axis === "mz"
-        if (
-          activeDrag.axis === "mz" &&
-          cornerUiRef.current.editing === "z"
-        ) {
-          return
+        cornerUiRef.current.draggingMoveAxis =
+          activeDrag.axis === "mx" ||
+          activeDrag.axis === "my" ||
+          activeDrag.axis === "mz"
+        const movePin = MOVE_GIZMO_TO_PIN[activeDrag.axis]
+        if (movePin) {
+          const editAxis = MOVE_PIN_TO_AXIS[movePin]
+          if (cornerUiRef.current.editing === editAxis) {
+            return
+          }
         }
         if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return
         const alongCm =
@@ -1247,10 +1341,11 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           cornerUiRef.current.proportionalPin = true
           cornerUiRef.current.proportionalDrag = false
         }
-        if (activeDrag?.axis === "mz") {
-          cornerUiRef.current.draggingMz = false
-        }
+        cornerUiRef.current.draggingMoveAxis = false
+        cornerUiRef.current.draggingScaleGizmo = false
+        cornerUiRef.current.draggingRigScale = false
         activeDrag = null
+        activeDragRef.current = null
       }
     }
 
@@ -1298,15 +1393,15 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       })
     }
 
-    const measureMoveZOffsetCm = () => {
+    const measureMoveOffsetCm = () => {
       const sess =
-        activeDrag?.axis === "mz" && activeDrag.moveAxis
+        activeDrag?.moveAxis
           ? {
               ids: activeDrag.ids,
               startTransforms: activeDrag.startTransforms,
               moveAxis: activeDrag.moveAxis,
             }
-          : cornerUiRef.current.moveZSession
+          : cornerUiRef.current.moveAxisSession
       if (!sess) return 0
       const primary = sess.ids[sess.ids.length - 1]
       const st = sess.startTransforms[primary]
@@ -1320,20 +1415,37 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       return snapCm(deltaCm)
     }
 
+    const measureGizmoScaleSizeCm = (axis: DimAxis) => {
+      const frame = transformRig.getFrame()
+      const span = { x: frame.hx * 2, y: frame.hy * 2, z: frame.hz * 2 }
+      return snapCm(span[axis])
+    }
+
     const publishCornerCallout = () => {
       const ui = cornerUiRef.current
       const mode = sceneRef.current?.toolMode
       const dragScaleId = activeDrag?.scaleDrag?.handleId ?? null
-      const dragMoveZ = Boolean(activeDrag?.axis === "mz" && activeDrag.moveAxis)
+      const dragMovePin =
+        activeDrag?.moveAxis && MOVE_GIZMO_TO_PIN[activeDrag.axis]
+          ? MOVE_GIZMO_TO_PIN[activeDrag.axis]
+          : null
+      const dragScaleGizmoPin =
+        activeDrag?.scaleDrag?.handleId &&
+        SCALE_GIZMO_TO_PIN[activeDrag.scaleDrag.handleId]
+          ? SCALE_GIZMO_TO_PIN[activeDrag.scaleDrag.handleId]
+          : null
       const hoverDim = dimensionHandleActive(ui.hoverId)
-      const activeId = dragMoveZ
-        ? "move-z"
-        : dragScaleId ??
-          (hoverDim
-            ? ui.hoverId
-            : ui.pinnedId === "move-z" || dimensionHandleActive(ui.pinnedId)
-              ? ui.pinnedId
-              : null)
+      const activeId =
+        dragMovePin ??
+        dragScaleGizmoPin ??
+        dragScaleId ??
+        (hoverDim
+          ? ui.hoverId
+          : isMovePin(ui.pinnedId) ||
+              isScaleGizmoPin(ui.pinnedId) ||
+              dimensionHandleActive(ui.pinnedId)
+            ? ui.pinnedId
+            : null)
       const hide = () => {
         calloutGeomRef.current = null
         if (calloutSig !== "") {
@@ -1341,31 +1453,16 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           setCornerCallout(null)
         }
       }
-      if (activeId === "move-z") {
-        if (!transformRig.hasTargets() && !gizmoCtrl.root.visible) {
-          hide()
-          return
-        }
-        const offsetCm = measureMoveZOffsetCm()
-        const host = container?.parentElement
-        if (!container || !host) {
-          hide()
-          return
-        }
-        const tipWorld =
-          sceneRef.current?.toolMode === "transform" && transformRig.root.visible
-            ? transformRig.getMoveZTipWorld()
-            : gizmoCtrl.getMoveAxisTipWorld("mz") ?? transformRig.getMoveZTipWorld()
-        if (!tipWorld) {
-          hide()
-          return
-        }
-        const moveDir =
-          cornerUiRef.current.moveZSession?.moveAxis?.clone() ??
-          new THREE.Vector3(0, 0, 1)
-        if (moveDir.lengthSq() < 1e-8) moveDir.set(0, 0, 1)
-        else moveDir.normalize()
-        const tailWorld = tipWorld.clone().add(moveDir.clone().multiplyScalar(-22))
+      const host = container?.parentElement
+      const projectLabel = (
+        tipWorld: THREE.Vector3,
+        axisDir: THREE.Vector3
+      ): { labelX: number; labelY: number } | null => {
+        if (!container || !host) return null
+        const dir = axisDir.clone()
+        if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1)
+        else dir.normalize()
+        const tailWorld = tipWorld.clone().add(dir.clone().multiplyScalar(-22))
         activeCam.updateMatrixWorld()
         const hostRect = host.getBoundingClientRect()
         const canvasRect = renderer.domElement.getBoundingClientRect()
@@ -1381,29 +1478,66 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         }
         const tipPt = project(tipWorld)
         const tailPt = project(tailWorld)
-        if (tailPt.behind && tipPt.behind) {
-          hide()
-          return
-        }
+        if (tailPt.behind && tipPt.behind) return null
         const dx = tipPt.x - tailPt.x
         const dy = tipPt.y - tailPt.y
         const dLen = Math.hypot(dx, dy) || 1
-        const alongX = dx / dLen
-        const alongY = dy / dLen
-        const labelX = tipPt.x + alongX * 36
-        const labelY = tipPt.y + alongY * 36
+        return {
+          labelX: tipPt.x + (dx / dLen) * 36,
+          labelY: tipPt.y + (dy / dLen) * 36,
+        }
+      }
+
+      if (isMovePin(activeId)) {
+        if (!transformRig.hasTargets() && !gizmoCtrl.root.visible) {
+          hide()
+          return
+        }
+        const axis = MOVE_PIN_TO_AXIS[activeId]
+        const gizmoAxis = MOVE_PIN_TO_GIZMO[activeId]
+        const offsetCm = measureMoveOffsetCm()
+        if (!host || !container) {
+          hide()
+          return
+        }
+        const tipWorld =
+          activeId === "move-z" &&
+          sceneRef.current?.toolMode === "transform" &&
+          transformRig.root.visible
+            ? transformRig.getMoveZTipWorld() ??
+              gizmoCtrl.getMoveAxisTipWorld("mz")
+            : gizmoCtrl.getMoveAxisTipWorld(gizmoAxis) ??
+              (activeId === "move-z" ? transformRig.getMoveZTipWorld() : null)
+        if (!tipWorld) {
+          hide()
+          return
+        }
+        const moveDir =
+          cornerUiRef.current.moveAxisSession?.moveAxis?.clone() ??
+          new THREE.Vector3(
+            axis === "x" ? 1 : 0,
+            axis === "y" ? 1 : 0,
+            axis === "z" ? 1 : 0
+          )
+        const labelPt = projectLabel(tipWorld, moveDir)
+        if (!labelPt) {
+          hide()
+          return
+        }
+        const { labelX, labelY } = labelPt
         const display = lengthToDisplay(offsetCm, lengthUnitRef.current)
         const view: DimCalloutView = {
-          id: "move-z",
+          id: activeId,
           labelOnly: true,
+          labelAxis: axis,
           moveDeltaCm: offsetCm,
           labelX,
           labelY,
           edges: [
             {
-              axis: "z",
+              axis,
               length: display,
-              color: TRANSFORM_AXIS_CSS.z,
+              color: TRANSFORM_AXIS_CSS[axis],
               ex1: 0,
               ey1: 0,
               ex2: 0,
@@ -1418,14 +1552,14 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           ],
         }
         calloutGeomRef.current = view
-        const sig = `move-z|${formatOffsetDisplay(offsetCm, lengthUnitRef.current)}|${labelX.toFixed(0)},${labelY.toFixed(0)}`
-        const typingZ =
-          cornerUiRef.current.editing === "z" &&
-          cornerUiRef.current.pinnedId === "move-z"
+        const sig = `${activeId}|${formatOffsetDisplay(offsetCm, lengthUnitRef.current)}|${labelX.toFixed(0)},${labelY.toFixed(0)}`
+        const typing =
+          cornerUiRef.current.editing === axis &&
+          cornerUiRef.current.pinnedId === activeId
         if (sig !== calloutSig) {
           calloutSig = sig
           setCornerCallout((prev) =>
-            typingZ && prev?.id === "move-z"
+            typing && prev?.id === activeId
               ? {
                   ...prev,
                   moveDeltaCm: offsetCm,
@@ -1433,6 +1567,77 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                   labelY,
                   edges: view.edges,
                 }
+              : view
+          )
+        }
+        return
+      }
+
+      if (isScaleGizmoPin(activeId)) {
+        if (!gizmoCtrl.root.visible || !transformRig.hasTargets()) {
+          hide()
+          return
+        }
+        const axis = SCALE_PIN_TO_AXIS[activeId]
+        const gizmoAxis = SCALE_PIN_TO_GIZMO[activeId]
+        const valueCm = measureGizmoScaleSizeCm(axis)
+        if (!host || !container) {
+          hide()
+          return
+        }
+        const tipWorld = gizmoCtrl.getScaleAxisTipWorld(gizmoAxis)
+        if (!tipWorld) {
+          hide()
+          return
+        }
+        const frame = transformRig.getFrame()
+        const axisDir = new THREE.Vector3(
+          axis === "x" ? 1 : 0,
+          axis === "y" ? 1 : 0,
+          axis === "z" ? 1 : 0
+        ).applyQuaternion(frame.quaternion)
+        const labelPt = projectLabel(tipWorld, axisDir)
+        if (!labelPt) {
+          hide()
+          return
+        }
+        const { labelX, labelY } = labelPt
+        const display = lengthToDisplay(valueCm, lengthUnitRef.current)
+        const view: DimCalloutView = {
+          id: activeId,
+          labelOnly: true,
+          labelAxis: axis,
+          valueCm,
+          labelX,
+          labelY,
+          edges: [
+            {
+              axis,
+              length: display,
+              color: TRANSFORM_AXIS_CSS[axis],
+              ex1: 0,
+              ey1: 0,
+              ex2: 0,
+              ey2: 0,
+              x1: 0,
+              y1: 0,
+              x2: 0,
+              y2: 0,
+              lx: labelX,
+              ly: labelY,
+            },
+          ],
+        }
+        calloutGeomRef.current = view
+        const sig = `${activeId}|${formatOffsetDisplay(valueCm, lengthUnitRef.current)}|${labelX.toFixed(0)},${labelY.toFixed(0)}`
+        const typing =
+          cornerUiRef.current.editing === axis &&
+          cornerUiRef.current.pinnedId === activeId
+        if (sig !== calloutSig) {
+          calloutSig = sig
+          setCornerCallout((prev) =>
+            typing && prev?.id === activeId
+              ? { ...prev, valueCm, labelX, labelY, edges: view.edges }
               : view
           )
         }
@@ -1452,7 +1657,6 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         : activeId.startsWith("side-x") || activeId.startsWith("side-y")
           ? transformRig.getPlanarFaceCallout(activeId)
           : transformRig.getCornerCallout(activeId)
-      const host = container?.parentElement
       if (!data || !container || !host) {
         hide()
         return
@@ -2041,9 +2245,11 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     cornerUiRef.current.proportionalEdit = false
     cornerUiRef.current.proportionalDrag = false
     cornerUiRef.current.snapshot = null
-    cornerUiRef.current.draggingMz = false
-    cornerUiRef.current.moveZSession = null
-    cornerUiRef.current.moveZDraftText = undefined
+    cornerUiRef.current.draggingMoveAxis = false
+    cornerUiRef.current.draggingScaleGizmo = false
+    cornerUiRef.current.draggingRigScale = false
+    cornerUiRef.current.moveAxisSession = null
+    cornerUiRef.current.scaleGizmoSession = null
     calloutGeomRef.current = null
     setCornerCallout(null)
     setDimDraft((draft) => (Object.keys(draft).length ? {} : draft))
@@ -2096,8 +2302,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [])
 
-  const applyMoveZDimension = (raw: string, recordHistory = true) => {
-    const sess = cornerUiRef.current.moveZSession
+  const applyMoveAxisDimension = (raw: string, recordHistory = true) => {
+    const sess = cornerUiRef.current.moveAxisSession
     if (!sess) return
     const nextDisplay = parseFloat(raw.replace(/,/g, ".").trim())
     if (!Number.isFinite(nextDisplay)) return
@@ -2127,77 +2333,101 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     )
   }
 
-  const moveZKeyboardActive = () => {
-    const ui = cornerUiRef.current
-    return Boolean(
-      ui.moveZSession &&
-        (ui.draggingMz || ui.pinnedId === "move-z" || ui.editing === "z")
+  const applyScaleGizmoDimension = (raw: string, recordHistory = true) => {
+    const sess = cornerUiRef.current.scaleGizmoSession
+    const api = sceneRef.current as
+      | (SceneControllerHandle & { transformRig: TransformBoxRig })
+      | null
+    const rig = api?.transformRig
+    if (!sess || !rig || !api?.selectedIds.length) return
+    const pin = SCALE_GIZMO_TO_PIN[sess.handleId]
+    if (!pin) return
+    const axis = SCALE_PIN_TO_AXIS[pin]
+    const nextDisplay = parseFloat(raw.replace(/,/g, ".").trim())
+    if (!Number.isFinite(nextDisplay) || nextDisplay <= 0) return
+    const nextCm = snapCm(lengthFromDisplay(nextDisplay, lengthUnit))
+    const frame = rig.getFrame()
+    const half = { x: frame.hx, y: frame.hy, z: frame.hz }
+    const prevCm = half[axis] * 2
+    if (!(prevCm > 0)) return
+    if (Math.abs(nextCm - prevCm) < 1e-4) return
+    const scaled = dimensionEditScale(
+      "face",
+      sess.sign,
+      half,
+      axis,
+      prevCm,
+      nextCm,
+      false,
+      sess.symmetric
+    )
+    if (!scaled) return
+    const { fx, fy, fz, anchor } = scaled
+    if (
+      Math.abs(fx - 1) < 1e-6 &&
+      Math.abs(fy - 1) < 1e-6 &&
+      Math.abs(fz - 1) < 1e-6
+    ) {
+      return
+    }
+    const quat = frame.quaternion
+    const anchorWorld = anchor.clone().applyQuaternion(quat).add(frame.center)
+    const ids = new Set(sess.ids)
+    commitRef.current(
+      (prev) =>
+        prev.map((obj) =>
+          ids.has(obj.id)
+            ? scaleObjectAboutAnchor(obj, fx, fy, fz, anchorWorld, quat, false)
+            : obj
+        ),
+      recordHistory
     )
   }
 
-  React.useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!moveZKeyboardActive()) {
-        return
-      }
-      const target = e.target as HTMLElement | null
-      if (document.activeElement === moveZInputRef.current) {
-        return
-      }
-      if (
-        target &&
-        (target.tagName === "TEXTAREA" ||
-          (target.tagName === "INPUT" && target !== moveZInputRef.current))
-      ) {
-        return
-      }
-      if (e.key === "Enter") {
-        const raw =
-          cornerUiRef.current.moveZDraftText ?? moveZInputRef.current?.value
-        if (raw !== undefined && raw !== "") {
-          e.preventDefault()
-          applyMoveZDimension(raw, true)
-          cornerUiRef.current.editing = null
-          cornerUiRef.current.moveZDraftText = undefined
-          clearMoveZDraftRef.current()
-        }
-        return
-      }
-      if (e.key === "Escape") {
-        cornerUiRef.current.editing = null
-        cornerUiRef.current.moveZDraftText = undefined
-        clearMoveZDraftRef.current()
-        return
-      }
-      if (
-        e.key === "Backspace" &&
-        (cornerUiRef.current.moveZDraftText !== undefined ||
-          cornerUiRef.current.editing === "z")
-      ) {
-        e.preventDefault()
-        cornerUiRef.current.pinnedId = "move-z"
-        cornerUiRef.current.editing = "z"
-        const cur = cornerUiRef.current.moveZDraftText ?? ""
-        const next = cur.slice(0, -1)
-        cornerUiRef.current.moveZDraftText = next
-        setDimDraft((draft) => ({ ...draft, z: next }))
-        return
-      }
-      if (e.key.length === 1 && /[0-9.,\-]/.test(e.key) && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault()
-        cornerUiRef.current.pinnedId = "move-z"
-        cornerUiRef.current.editing = "z"
-        const fresh = cornerUiRef.current.moveZDraftText === undefined
-        const cur = fresh ? "" : cornerUiRef.current.moveZDraftText!
-        const next = fresh ? e.key : cur + e.key
-        cornerUiRef.current.moveZDraftText = next
-        setDimDraft((draft) => ({ ...draft, z: next }))
-        moveZInputRef.current?.focus()
+  const transformLabelKeyboardTarget = (): {
+    kind: "move" | "scaleGizmo" | "rigScale"
+    axis: DimAxis
+    pinId: string
+  } | null => {
+    const ui = cornerUiRef.current
+    if (isMovePin(ui.pinnedId) && ui.moveAxisSession) {
+      return {
+        kind: "move",
+        axis: MOVE_PIN_TO_AXIS[ui.pinnedId],
+        pinId: ui.pinnedId,
       }
     }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [lengthUnit])
+    if (isScaleGizmoPin(ui.pinnedId) && ui.scaleGizmoSession) {
+      return {
+        kind: "scaleGizmo",
+        axis: SCALE_PIN_TO_AXIS[ui.pinnedId],
+        pinId: ui.pinnedId,
+      }
+    }
+    if (
+      ui.pinnedId &&
+      dimensionHandleActive(ui.pinnedId) &&
+      !isMovePin(ui.pinnedId) &&
+      !isScaleGizmoPin(ui.pinnedId)
+    ) {
+      const drag = activeDragRef.current?.scaleDrag
+      let axis: DimAxis | null = ui.editing
+      if (!axis && drag) {
+        if (drag.handleId.startsWith("side-x")) axis = "x"
+        else if (drag.handleId.startsWith("side-y")) axis = "y"
+        else if (drag.handleId.startsWith("height-z")) axis = "z"
+        else if (Math.abs(drag.sign.x) > 0 && Math.abs(drag.sign.y) === 0)
+          axis = "x"
+        else if (Math.abs(drag.sign.y) > 0 && Math.abs(drag.sign.x) === 0)
+          axis = "y"
+        else if (Math.abs(drag.sign.z) > 0) axis = "z"
+      }
+      if (axis) {
+        return { kind: "rigScale", axis, pinId: ui.pinnedId }
+      }
+    }
+    return null
+  }
 
   const applyCornerDimension = (
     handleId: string,
@@ -2206,8 +2436,12 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     uniform: boolean,
     symmetric: boolean
   ) => {
-    if (handleId === "move-z") {
-      applyMoveZDimension(raw)
+    if (isMovePin(handleId)) {
+      applyMoveAxisDimension(raw)
+      return
+    }
+    if (isScaleGizmoPin(handleId)) {
+      applyScaleGizmoDimension(raw)
       return
     }
     const api = sceneRef.current as
@@ -2294,41 +2528,130 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     )
   }
 
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const targetInfo = transformLabelKeyboardTarget()
+      if (!targetInfo) return
+      const { axis, pinId, kind } = targetInfo
+      const labelInput = transformLabelInputRef.current
+      const cornerInput = cornerDimInputRefs.current[axis]
+      const activeInputs = [labelInput, cornerInput].filter(Boolean) as HTMLInputElement[]
+      const target = e.target as HTMLElement | null
+      if (activeInputs.some((el) => document.activeElement === el)) return
+      if (
+        target &&
+        (target.tagName === "TEXTAREA" ||
+          (target.tagName === "INPUT" &&
+            !activeInputs.some((el) => el === target)))
+      ) {
+        return
+      }
+      const draftVal = dimDraftRef.current[axis]
+      const commitLabel = () => {
+        const raw = draftVal ?? labelInput?.value
+        if (raw === undefined || raw === "") return
+        if (kind === "move") applyMoveAxisDimension(raw, true)
+        else if (kind === "scaleGizmo") applyScaleGizmoDimension(raw, true)
+        else if (cornerCalloutIdRef.current) {
+          applyCornerDimension(
+            cornerCalloutIdRef.current,
+            axis,
+            raw,
+            false,
+            false
+          )
+        }
+        cornerUiRef.current.editing = null
+        clearAxisDraft(axis)
+      }
+      if (e.key === "Enter") {
+        e.preventDefault()
+        commitLabel()
+        return
+      }
+      if (e.key === "Escape") {
+        cornerUiRef.current.editing = null
+        clearAxisDraft(axis)
+        return
+      }
+      if (
+        e.key === "Backspace" &&
+        (draftVal !== undefined || cornerUiRef.current.editing === axis)
+      ) {
+        e.preventDefault()
+        cornerUiRef.current.pinnedId = pinId
+        cornerUiRef.current.editing = axis
+        const next = (draftVal ?? "").slice(0, -1)
+        setDimDraft((draft) => ({ ...draft, [axis]: next }))
+        return
+      }
+      if (e.key.length === 1 && /[0-9.,\-]/.test(e.key) && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        cornerUiRef.current.pinnedId = pinId
+        cornerUiRef.current.editing = axis
+        const fresh = draftVal === undefined
+        const cur = fresh ? "" : draftVal!
+        const next = fresh ? e.key : cur + e.key
+        setDimDraft((draft) => ({ ...draft, [axis]: next }))
+        ;(labelInput ?? cornerInput)?.focus()
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [lengthUnit])
+
+  const labelCallout =
+    cornerCallout?.labelOnly &&
+    cornerCallout.labelAxis &&
+    (isMovePin(cornerCallout.id) || isScaleGizmoPin(cornerCallout.id))
+      ? cornerCallout
+      : null
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
-      {cornerCallout?.labelOnly && cornerCallout.id === "move-z" ? (
-        <MoveZDeltaLabel
-          inputRef={moveZInputRef}
-          callout={cornerCallout}
+      {labelCallout ? (
+        <TransformAxisValueLabel
+          inputRef={transformLabelInputRef}
+          callout={labelCallout}
           lengthUnit={lengthUnit}
-          draft={dimDraft.z}
-          onDraft={(value) => {
-            cornerUiRef.current.moveZDraftText = value
-            setDimDraft((draft) => ({ ...draft, z: value }))
-          }}
+          mode={isMovePin(labelCallout.id) ? "offset" : "size"}
+          draft={
+            labelCallout.labelAxis
+              ? dimDraft[labelCallout.labelAxis]
+              : undefined
+          }
+          onDraft={(value) =>
+            setDimDraft((draft) => ({
+              ...draft,
+              [labelCallout.labelAxis!]: value,
+            }))
+          }
           onFocus={() => {
-            cornerUiRef.current.editing = "z"
-            cornerUiRef.current.pinnedId = "move-z"
+            const axis = labelCallout.labelAxis!
+            cornerUiRef.current.editing = axis
+            cornerUiRef.current.pinnedId = labelCallout.id
           }}
           onCommit={(raw) => {
-            applyMoveZDimension(raw, true)
+            const axis = labelCallout.labelAxis!
+            applyCornerDimension(labelCallout.id, axis, raw, false, false)
             cornerUiRef.current.editing = null
-            cornerUiRef.current.moveZDraftText = undefined
-            clearMoveZDraftRef.current()
+            clearAxisDraft(axis)
           }}
           onCancel={() => {
+            const axis = labelCallout.labelAxis!
             cornerUiRef.current.editing = null
-            cornerUiRef.current.moveZDraftText = undefined
-            clearMoveZDraftRef.current()
+            clearAxisDraft(axis)
           }}
         />
       ) : (
-        cornerCallout && (
+        cornerCallout &&
+        !cornerCallout.labelOnly && (
           <CornerDimensionCallout
             callout={cornerCallout}
             lengthUnit={lengthUnit}
             drafts={dimDraft}
+            inputRefs={cornerDimInputRefs}
             onDraft={(axis, value) =>
               setDimDraft((draft) => ({ ...draft, [axis]: value }))
             }
@@ -2351,12 +2674,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
             onCancel={(axis) => {
               cornerUiRef.current.editing = null
               cornerUiRef.current.proportionalEdit = false
-              setDimDraft((draft) => {
-                if (draft[axis] === undefined) return draft
-                const next = { ...draft }
-                delete next[axis]
-                return next
-              })
+              clearAxisDraft(axis)
             }}
           />
         )
@@ -2459,39 +2777,43 @@ function blockIdlePointer(e: React.PointerEvent) {
   if (e.buttons === 0) e.stopPropagation()
 }
 
-function MoveZDeltaLabel({
+function TransformAxisValueLabel({
   inputRef,
   callout,
   lengthUnit,
+  mode,
   draft,
   onDraft,
   onFocus,
   onCommit,
   onCancel,
 }: {
-  inputRef: React.RefObject<HTMLInputElement | null>
+  inputRef: React.RefObject<HTMLInputElement>
   callout: DimCalloutView
   lengthUnit: LengthUnit
+  mode: "offset" | "size"
   draft?: string
   onDraft: (value: string) => void
   onFocus: () => void
   onCommit: (raw: string) => void
   onCancel: () => void
 }) {
-  const offsetCm = callout.moveDeltaCm ?? 0
-  const shown = formatOffsetDisplay(offsetCm, lengthUnit)
-  const color = TRANSFORM_AXIS_CSS.z
+  const axis = callout.labelAxis ?? callout.edges[0]?.axis ?? "z"
+  const valueCm =
+    mode === "offset"
+      ? (callout.moveDeltaCm ?? 0)
+      : (callout.valueCm ?? 0)
+  const shown = formatOffsetDisplay(valueCm, lengthUnit)
+  const color = TRANSFORM_AXIS_CSS[axis]
   const lx = callout.labelX ?? callout.edges[0]?.lx ?? 0
   const ly = callout.labelY ?? callout.edges[0]?.ly ?? 0
 
   const bump = (dir: 1 | -1) => {
     const stepCm = lengthUnit === "mm" ? 0.1 : 0.1
-    const curDisplay = parseFloat(
-      (draft ?? shown).replace(/,/g, ".")
-    )
+    const curDisplay = parseFloat((draft ?? shown).replace(/,/g, "."))
     const curCm = Number.isFinite(curDisplay)
       ? lengthFromDisplay(curDisplay, lengthUnit)
-      : offsetCm
+      : valueCm
     const nextCm = snapCm(curCm + dir * stepCm)
     const text = formatOffsetDisplay(nextCm, lengthUnit)
     onDraft(text)
@@ -2519,7 +2841,11 @@ function MoveZDeltaLabel({
         className="adivi-num-input"
         type="text"
         inputMode="decimal"
-        aria-label={`Vertical move offset (${lengthUnit})`}
+        aria-label={
+          mode === "offset"
+            ? `${axis.toUpperCase()} move offset (${lengthUnit})`
+            : `${axis.toUpperCase()} size (${lengthUnit})`
+        }
         value={draft !== undefined ? draft : shown}
         onFocus={(e) => {
           onFocus()
@@ -2597,6 +2923,7 @@ function CornerDimensionCallout({
   callout,
   lengthUnit,
   drafts,
+  inputRefs,
   onDraft,
   onFocusAxis,
   onShiftProportional,
@@ -2606,6 +2933,9 @@ function CornerDimensionCallout({
   callout: DimCalloutView
   lengthUnit: LengthUnit
   drafts: Partial<Record<DimAxis, string>>
+  inputRefs: React.MutableRefObject<
+    Partial<Record<DimAxis, HTMLInputElement | null>>
+  >
   onDraft: (axis: DimAxis, value: string) => void
   onFocusAxis: (axis: DimAxis, handleId: string) => void
   onShiftProportional: () => void
@@ -2691,18 +3021,30 @@ function CornerDimensionCallout({
           onKeyUp={blockOverlayEvent}
         >
           <input
+            ref={(el) => {
+              inputRefs.current[edge.axis] = el
+            }}
             className="adivi-num-input"
             type="text"
             inputMode="decimal"
             aria-label={`${edge.axis.toUpperCase()} dimension in ${lengthUnit}`}
-            value={drafts[edge.axis] ?? fmt(edge.length)}
+            value={
+              drafts[edge.axis] !== undefined
+                ? drafts[edge.axis]
+                : fmt(edge.length)
+            }
             onFocus={(e) => {
               onFocusAxis(edge.axis, callout.id)
-              onDraft(edge.axis, e.currentTarget.value)
-              const input = e.currentTarget
-              requestAnimationFrame(() => input.select())
+              requestAnimationFrame(() => e.currentTarget.select())
             }}
-            onChange={(e) => onDraft(edge.axis, e.target.value)}
+            onChange={(e) => {
+              if (drafts[edge.axis] === undefined) {
+                onFocusAxis(edge.axis, callout.id)
+                onDraft(edge.axis, e.target.value)
+                return
+              }
+              onDraft(edge.axis, e.target.value)
+            }}
             onBlur={() => onCancel(edge.axis)}
             onPointerDown={blockOverlayEvent}
             onPointerMove={blockIdlePointer}
@@ -2711,6 +3053,17 @@ function CornerDimensionCallout({
             onKeyUp={blockOverlayEvent}
             onKeyDown={(e) => {
               e.stopPropagation()
+              const isPrintable =
+                e.key.length === 1 &&
+                /[0-9.,\-]/.test(e.key) &&
+                !e.ctrlKey &&
+                !e.metaKey
+              if (isPrintable && drafts[edge.axis] === undefined) {
+                e.preventDefault()
+                onFocusAxis(edge.axis, callout.id)
+                onDraft(edge.axis, e.key)
+                return
+              }
               if (e.shiftKey && e.key !== "Escape") onShiftProportional()
               if (e.key === "Enter") {
                 e.preventDefault()
