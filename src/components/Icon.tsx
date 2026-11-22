@@ -216,6 +216,14 @@ export function Icon({
         <line x1="7.5" y1="11" x2="16.5" y2="11" />
       </>
     ),
+    wireframe: (
+      <>
+        <path d="M12 2l8 4.5v11L12 22l-8-4.5v-11L12 2z" />
+        <line x1="12" y1="11" x2="12" y2="22" />
+        <line x1="12" y1="11" x2="20" y2="6.5" />
+        <line x1="12" y1="11" x2="4" y2="6.5" />
+      </>
+    ),
     "mirror-x": (
       <>
         <line x1="12" y1="2.5" x2="12" y2="21.5" stroke={accent} strokeWidth={2.4} strokeDasharray="3 2.5" />

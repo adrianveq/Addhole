@@ -8,12 +8,14 @@ import {
   snapRotationDeg,
 } from "../utils/transformSnap"
 import { inp, lbl, neutralChipBtn } from "../styles/uiStyles"
+import { getTransformHome } from "../utils/transformHome"
 import { Icon } from "./Icon"
 
 const axisInk = (ax: "x" | "y" | "z") =>
   ax === "x" ? "#EB9090" : ax === "y" ? "#78D896" : "#84B4F8"
 
 const RESET_ORANGE = "#F6C09A"
+const ACCEPT_GREEN = "#9DD9B4"
 
 const sectionHead: React.CSSProperties = {
   display: "flex",
@@ -40,6 +42,48 @@ const miniChip = (active = false): React.CSSProperties => ({
   flexShrink: 0,
 })
 
+function TransformSectionActions({
+  modified,
+  acceptTitle,
+  onAccept,
+  resetTitle,
+  onReset,
+  children,
+}: {
+  modified: boolean
+  acceptTitle: string
+  onAccept: () => void
+  resetTitle: string
+  onReset: () => void
+  children?: React.ReactNode
+}) {
+  return (
+    <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+      {modified && (
+        <>
+          <button
+            type="button"
+            title={acceptTitle}
+            onClick={onAccept}
+            style={{ ...miniChip(false), color: ACCEPT_GREEN }}
+          >
+            <Icon name="check" size={10} />
+          </button>
+          <button
+            type="button"
+            title={resetTitle}
+            onClick={onReset}
+            style={{ ...miniChip(false), color: RESET_ORANGE }}
+          >
+            <Icon name="reset" size={10} />
+          </button>
+        </>
+      )}
+      {children}
+    </div>
+  )
+}
+
 export function InspectorPanel({
   topOffset,
   glass,
@@ -56,6 +100,9 @@ export function InspectorPanel({
   isScaleModified,
   isPosModified,
   isRotModified,
+  onAcceptScale,
+  onAcceptPos,
+  onAcceptRot,
   dimUnit,
   setDimUnit,
   lockProp,
@@ -90,6 +137,9 @@ export function InspectorPanel({
   isScaleModified: boolean
   isPosModified: boolean
   isRotModified: boolean
+  onAcceptScale: () => void
+  onAcceptPos: () => void
+  onAcceptRot: () => void
   dimUnit: DimUnit
   setDimUnit: React.Dispatch<React.SetStateAction<DimUnit>>
   lockProp: boolean
@@ -221,12 +271,34 @@ export function InspectorPanel({
           <span>
             {selectedIds.length > 1
               ? `Align & Transform (${selectedIds.length})`
-              : "Transform & Mesh"}
+              : "Mesh"}
           </span>
         </button>
-        <span style={{ fontSize: 11.5, fontWeight: 700, color: accentBorder }}>
-          {selectedTriCount.toLocaleString()} tris
-        </span>
+        {!inspectorCollapsed && (
+          <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+            <button
+              type="button"
+              title="Switch cm / %"
+              onClick={() => setDimUnit((u) => (u === "cm" ? "%" : "cm"))}
+              style={{
+                ...miniChip(false),
+                width: 22,
+                fontSize: 9,
+                fontWeight: 700,
+              }}
+            >
+              {dimUnit}
+            </button>
+            <button
+              type="button"
+              title="Lock Proportions"
+              onClick={() => setLockProp((v) => !v)}
+              style={miniChip(lockProp)}
+            >
+              <Icon name={lockProp ? "lock" : "unlock"} size={10} />
+            </button>
+          </div>
+        )}
       </div>
 
       {!inspectorCollapsed && (
@@ -299,44 +371,18 @@ export function InspectorPanel({
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={sectionHead}>
               <span style={sectionTitle}>Scale</span>
-              <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
-                {isScaleModified && (
-                  <button
-                    type="button"
-                    title="Reset Scale"
-                    onClick={() =>
-                      patchObject(selectedObj.id, (o) => ({
-                        ...o,
-                        scale: { sx: 1, sy: 1, sz: 1 },
-                      }))
-                    }
-                    style={{ ...miniChip(false), color: RESET_ORANGE }}
-                  >
-                    <Icon name="reset" size={10} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  title="Switch cm / %"
-                  onClick={() => setDimUnit((u) => (u === "cm" ? "%" : "cm"))}
-                  style={{
-                    ...miniChip(false),
-                    width: 22,
-                    fontSize: 9,
-                    fontWeight: 700,
-                  }}
-                >
-                  {dimUnit}
-                </button>
-                <button
-                  type="button"
-                  title="Lock Proportions"
-                  onClick={() => setLockProp((v) => !v)}
-                  style={miniChip(lockProp)}
-                >
-                  <Icon name={lockProp ? "lock" : "unlock"} size={10} />
-                </button>
-              </div>
+              <TransformSectionActions
+                modified={isScaleModified}
+                acceptTitle="Accept scale as default"
+                onAccept={onAcceptScale}
+                resetTitle="Reset Scale"
+                onReset={() =>
+                  patchObject(selectedObj.id, (o) => {
+                    const home = getTransformHome(o).scale
+                    return { ...o, scale: { ...home } }
+                  })
+                }
+              />
             </div>
             <div
               style={{
@@ -443,21 +489,18 @@ export function InspectorPanel({
           >
             <div style={sectionHead}>
               <span style={sectionTitle}>Position</span>
-              {isPosModified && (
-                <button
-                  type="button"
-                  title="Reset Position"
-                  onClick={() =>
-                    patchObject(selectedObj.id, (o) => ({
-                      ...o,
-                      pos: { x: 0, y: 0, z: 0 },
-                    }))
-                  }
-                  style={{ ...miniChip(false), color: RESET_ORANGE }}
-                >
-                  <Icon name="reset" size={10} />
-                </button>
-              )}
+              <TransformSectionActions
+                modified={isPosModified}
+                acceptTitle="Accept position as default"
+                onAccept={onAcceptPos}
+                resetTitle="Reset Position"
+                onReset={() =>
+                  patchObject(selectedObj.id, (o) => ({
+                    ...o,
+                    pos: { ...getTransformHome(o).pos },
+                  }))
+                }
+              />
             </div>
             <div
               style={{
@@ -522,21 +565,18 @@ export function InspectorPanel({
           >
             <div style={sectionHead}>
               <span style={sectionTitle}>Rotation</span>
-              {isRotModified && (
-                <button
-                  type="button"
-                  title="Reset Rotation"
-                  onClick={() =>
-                    patchObject(selectedObj.id, (o) => ({
-                      ...o,
-                      rot: { x: 0, y: 0, z: 0 },
-                    }))
-                  }
-                  style={{ ...miniChip(false), color: RESET_ORANGE }}
-                >
-                  <Icon name="reset" size={10} />
-                </button>
-              )}
+              <TransformSectionActions
+                modified={isRotModified}
+                acceptTitle="Accept rotation as default"
+                onAccept={onAcceptRot}
+                resetTitle="Reset Rotation"
+                onReset={() =>
+                  patchObject(selectedObj.id, (o) => ({
+                    ...o,
+                    rot: { ...getTransformHome(o).rot },
+                  }))
+                }
+              />
             </div>
             <div
               style={{
@@ -602,33 +642,41 @@ export function InspectorPanel({
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "26px 1fr 1fr",
                 gap: 6,
+                alignItems: "stretch",
               }}
             >
               <button
                 type="button"
+                title="Show mesh wireframe overlay on the selected object"
                 onClick={() => setShowWireframe((v) => !v)}
                 style={{
-                  height: 28,
+                  width: 26,
+                  height: 26,
                   borderRadius: Math.min(5, rSm),
                   border: `1px solid ${showWireframe ? accentBorder : "rgba(255,255,255,0.14)"}`,
                   backgroundColor: showWireframe
                     ? accent
                     : "rgba(255,255,255,0.06)",
                   color: "#FFF",
-                  fontSize: 11.5,
-                  fontWeight: 700,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
                   cursor: "pointer",
                 }}
               >
-                Wireframe
+                <Icon name="wireframe" size={12} />
               </button>
               <button
                 type="button"
                 onClick={() => setSimplifyOpen((v) => !v)}
                 style={{
-                  height: 28,
+                  height: 26,
+                  width: "100%",
+                  minWidth: 0,
+                  boxSizing: "border-box",
                   borderRadius: Math.min(5, rSm),
                   border: `1px solid ${simplifyOpen ? accentBorder : "rgba(255,255,255,0.14)"}`,
                   backgroundColor: simplifyOpen
@@ -647,6 +695,31 @@ export function InspectorPanel({
                 <Icon name="simplify" size={13} />
                 <span>Simplify</span>
               </button>
+              <span
+                title={`${selectedTriCount.toLocaleString()} triangles — finer detail and larger files when this count is higher`}
+                style={{
+                  height: 26,
+                  minWidth: 0,
+                  boxSizing: "border-box",
+                  borderRadius: Math.min(5, rSm),
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  backgroundColor: "rgba(255,255,255,0.04)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "0 4px",
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                  fontVariantNumeric: "tabular-nums",
+                  color: accentBorder,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  cursor: "help",
+                }}
+              >
+                {selectedTriCount.toLocaleString()}
+              </span>
             </div>
 
             {simplifyOpen && (

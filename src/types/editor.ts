@@ -32,6 +32,13 @@ export interface Scale3 {
   sz: number
 }
 
+/** Reset targets after “accept as default”; defaults to identity when unset. */
+export interface TransformHome {
+  scale: Scale3
+  pos: Vec3
+  rot: Vec3
+}
+
 export interface GroupChild {
   name: string
   color: string
@@ -54,6 +61,7 @@ export interface SceneObject {
   scale: Scale3
   pos: Vec3
   rot: Vec3
+  transformHome?: TransformHome
   isGroupMember?: boolean
   isGhostContext?: boolean
   groupChildren?: GroupChild[]

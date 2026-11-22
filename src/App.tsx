@@ -18,6 +18,14 @@ import {
 import { downloadBlob, fmt, uid } from "./utils/format"
 import { snapCm, snapRotationDeg } from "./utils/transformSnap"
 import {
+  acceptPosAsHome,
+  acceptRotAsHome,
+  acceptScaleAsHome,
+  isPosAwayFromHome,
+  isRotAwayFromHome,
+  isScaleAwayFromHome,
+} from "./utils/transformHome"
+import {
   deserializeProjectPayload,
   loadAutosaveFromIdb,
   saveAutosaveToIdb,
@@ -520,25 +528,9 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     )
   }, [selectedIds, commitObjects, getWorldMinZMm, editingGroupState])
 
-  const isScaleModified = Boolean(
-    selectedObj &&
-      (Math.abs(selectedObj.scale.sx - 1) > 1e-4 ||
-        Math.abs(selectedObj.scale.sy - 1) > 1e-4 ||
-        Math.abs(selectedObj.scale.sz - 1) > 1e-4)
-  )
-  const isPosModified = Boolean(
-    selectedObj &&
-      (Math.abs(selectedObj.pos.x) > 1e-3 ||
-        Math.abs(selectedObj.pos.y) > 1e-3 ||
-        Math.abs(selectedObj.pos.z) > 1e-3)
-  )
-  const isRotModified = Boolean(
-    selectedObj &&
-      (Math.abs(selectedObj.rot.x) > 0 ||
-        Math.abs(selectedObj.rot.y) > 0 ||
-        Math.abs(selectedObj.rot.z) > 0)
-  )
-
+  const isScaleModified = Boolean(selectedObj && isScaleAwayFromHome(selectedObj))
+  const isPosModified = Boolean(selectedObj && isPosAwayFromHome(selectedObj))
+  const isRotModified = Boolean(selectedObj && isRotAwayFromHome(selectedObj))
   const canUngroupSelected = Boolean(
     !editingGroupState &&
       selectedIds.length === 1 &&
@@ -605,6 +597,21 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     },
     [commitObjects, editingGroupState]
   )
+
+  const handleAcceptScale = React.useCallback(() => {
+    if (!selectedObj) return
+    patchObject(selectedObj.id, acceptScaleAsHome)
+  }, [selectedObj, patchObject])
+
+  const handleAcceptPos = React.useCallback(() => {
+    if (!selectedObj) return
+    patchObject(selectedObj.id, acceptPosAsHome)
+  }, [selectedObj, patchObject])
+
+  const handleAcceptRot = React.useCallback(() => {
+    if (!selectedObj) return
+    patchObject(selectedObj.id, acceptRotAsHome)
+  }, [selectedObj, patchObject])
 
   const patchSelected = React.useCallback(
     (fn: (o: SceneObject) => SceneObject, recordHistory = true) => {
@@ -2100,6 +2107,9 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
           isScaleModified={isScaleModified}
           isPosModified={isPosModified}
           isRotModified={isRotModified}
+          onAcceptScale={handleAcceptScale}
+          onAcceptPos={handleAcceptPos}
+          onAcceptRot={handleAcceptRot}
           dimUnit={dimUnit}
           setDimUnit={setDimUnit}
           lockProp={lockProp}

@@ -37,6 +37,7 @@ export function serializeProjectPayload(
       scale: { ...o.scale },
       pos: { ...o.pos },
       rot: { ...o.rot },
+      transformHome: o.transformHome ? { ...o.transformHome, scale: { ...o.transformHome.scale }, pos: { ...o.transformHome.pos }, rot: { ...o.transformHome.rot } } : undefined,
       baseDim: { ...o.baseDim },
       groupOriginWorld: o.groupOriginWorld ? { ...o.groupOriginWorld } : undefined,
       coords: serializeGeometry(o.geometry),
@@ -78,6 +79,13 @@ export function deserializeProjectPayload(data: any): {
         scale: raw.scale || { sx: 1, sy: 1, sz: 1 },
         pos: raw.pos || { x: 0, y: 0, z: 0 },
         rot: raw.rot || { x: 0, y: 0, z: 0 },
+        transformHome: raw.transformHome
+          ? {
+              scale: raw.transformHome.scale || { sx: 1, sy: 1, sz: 1 },
+              pos: raw.transformHome.pos || { x: 0, y: 0, z: 0 },
+              rot: raw.transformHome.rot || { x: 0, y: 0, z: 0 },
+            }
+          : undefined,
         groupOriginWorld: raw.groupOriginWorld,
         groupChildren: raw.groupChildren
           ? raw.groupChildren.map((c: any) => ({
