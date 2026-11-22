@@ -1,8 +1,14 @@
 import * as React from "react"
-import { DimUnit, SceneObject } from "../types/editor"
+import { LengthUnit, ScaleDimUnit, SceneObject } from "../types/editor"
 import { fmt } from "../utils/format"
 import {
-  SNAP_CM_STEP,
+  lengthFromDisplay,
+  lengthStep,
+  lengthToDisplay,
+  scaleFactorFromDisplay,
+  scaleSizeToDisplay,
+} from "../utils/dimUnits"
+import {
   SNAP_ROTATION_DEG_STEP,
   snapCm,
   snapRotationDeg,
@@ -84,6 +90,74 @@ function TransformSectionActions({
   )
 }
 
+function UnitSegment({
+  lengthUnit,
+  scaleUnit,
+  setLengthUnit,
+  setScaleUnit,
+  accentBorder,
+}: {
+  lengthUnit: LengthUnit
+  scaleUnit: ScaleDimUnit
+  setLengthUnit: React.Dispatch<React.SetStateAction<LengthUnit>>
+  setScaleUnit: React.Dispatch<React.SetStateAction<ScaleDimUnit>>
+  accentBorder: string
+}) {
+  const pick = (u: "mm" | "cm" | "%") => {
+    if (u === "%") {
+      setScaleUnit("%")
+      return
+    }
+    setLengthUnit(u)
+    setScaleUnit(u)
+  }
+  return (
+    <div
+      style={{
+        display: "flex",
+        borderRadius: 4,
+        overflow: "hidden",
+        border: "1px solid rgba(255,255,255,0.16)",
+        flexShrink: 0,
+        height: 18,
+      }}
+    >
+      {(["mm", "cm", "%"] as const).map((u) => {
+        const active =
+          u === "%"
+            ? scaleUnit === "%"
+            : lengthUnit === u && scaleUnit === u
+        return (
+          <button
+            key={u}
+            type="button"
+            title={
+              u === "%"
+                ? "Show scale as percent of base size (click mm or cm to leave %)"
+                : u === "mm"
+                  ? "Millimetres for scale and position"
+                  : "Centimetres for scale and position"
+            }
+            onClick={() => pick(u)}
+            style={{
+              ...miniChip(active),
+              width: 26,
+              height: 18,
+              minWidth: 26,
+              fontSize: 9.5,
+              fontWeight: 800,
+              borderRadius: 0,
+              border: "none",
+            }}
+          >
+            {u}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export function InspectorPanel({
   topOffset,
   glass,
@@ -103,8 +177,10 @@ export function InspectorPanel({
   onAcceptScale,
   onAcceptPos,
   onAcceptRot,
-  dimUnit,
-  setDimUnit,
+  lengthUnit,
+  setLengthUnit,
+  scaleUnit,
+  setScaleUnit,
   lockProp,
   setLockProp,
   dimInputs,
@@ -140,8 +216,10 @@ export function InspectorPanel({
   onAcceptScale: () => void
   onAcceptPos: () => void
   onAcceptRot: () => void
-  dimUnit: DimUnit
-  setDimUnit: React.Dispatch<React.SetStateAction<DimUnit>>
+  lengthUnit: LengthUnit
+  setLengthUnit: React.Dispatch<React.SetStateAction<LengthUnit>>
+  scaleUnit: ScaleDimUnit
+  setScaleUnit: React.Dispatch<React.SetStateAction<ScaleDimUnit>>
   lockProp: boolean
   setLockProp: React.Dispatch<React.SetStateAction<boolean>>
   dimInputs: { x: string; y: string; z: string }
@@ -168,21 +246,17 @@ export function InspectorPanel({
     if (!Number.isFinite(num) || num <= 0) return
     const k = `s${ax}` as "sx" | "sy" | "sz"
     const sizeCm =
-      dimUnit === "%"
+      scaleUnit === "%"
         ? (num / 100) * selectedObj.baseDim[ax]
-        : num
+        : lengthFromDisplay(num, scaleUnit)
     const snappedCm = fine ? sizeCm : snapCm(sizeCm)
     const s = snappedCm / selectedObj.baseDim[ax]
     if (lockProp) {
-      setDimInputs(
-        dimUnit === "%"
-          ? { x: fmt(s * 100), y: fmt(s * 100), z: fmt(s * 100) }
-          : {
-              x: fmt(selectedObj.baseDim.x * s),
-              y: fmt(selectedObj.baseDim.y * s),
-              z: fmt(selectedObj.baseDim.z * s),
-            }
-      )
+      setDimInputs({
+        x: fmt(scaleSizeToDisplay(selectedObj.baseDim.x * s, selectedObj.baseDim.x, scaleUnit)),
+        y: fmt(scaleSizeToDisplay(selectedObj.baseDim.y * s, selectedObj.baseDim.y, scaleUnit)),
+        z: fmt(scaleSizeToDisplay(selectedObj.baseDim.z * s, selectedObj.baseDim.z, scaleUnit)),
+      })
       patchObject(selectedObj.id, (o) => ({
         ...o,
         scale: { sx: s, sy: s, sz: s },
@@ -190,10 +264,13 @@ export function InspectorPanel({
     } else {
       setDimInputs((p) => ({
         ...p,
-        [ax]:
-          dimUnit === "%"
-            ? fmt(s * 100)
-            : fmt(selectedObj.baseDim[ax] * s),
+        [ax]: fmt(
+          scaleSizeToDisplay(
+            selectedObj.baseDim[ax] * s,
+            selectedObj.baseDim[ax],
+            scaleUnit
+          )
+        ),
       }))
       patchObject(selectedObj.id, (o) => ({
         ...o,
@@ -205,11 +282,12 @@ export function InspectorPanel({
   const commitPosAxis = (ax: "x" | "y" | "z", raw: string, fine: boolean) => {
     const num = parseFloat(raw.replace(",", "."))
     if (!Number.isFinite(num)) return
-    const v = fine ? num : snapCm(num)
-    setPosInputs((p) => ({ ...p, [ax]: fmt(v) }))
+    const cm = lengthFromDisplay(num, lengthUnit)
+    const snapped = fine ? cm : snapCm(cm)
+    setPosInputs((p) => ({ ...p, [ax]: fmt(lengthToDisplay(snapped, lengthUnit)) }))
     patchObject(selectedObj.id, (o) => ({
       ...o,
-      pos: { ...o.pos, [ax]: v },
+      pos: { ...o.pos, [ax]: snapped },
     }))
   }
 
@@ -275,29 +353,13 @@ export function InspectorPanel({
           </span>
         </button>
         {!inspectorCollapsed && (
-          <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
-            <button
-              type="button"
-              title="Switch cm / %"
-              onClick={() => setDimUnit((u) => (u === "cm" ? "%" : "cm"))}
-              style={{
-                ...miniChip(false),
-                width: 22,
-                fontSize: 9,
-                fontWeight: 700,
-              }}
-            >
-              {dimUnit}
-            </button>
-            <button
-              type="button"
-              title="Lock Proportions"
-              onClick={() => setLockProp((v) => !v)}
-              style={miniChip(lockProp)}
-            >
-              <Icon name={lockProp ? "lock" : "unlock"} size={10} />
-            </button>
-          </div>
+          <UnitSegment
+            lengthUnit={lengthUnit}
+            scaleUnit={scaleUnit}
+            setLengthUnit={setLengthUnit}
+            setScaleUnit={setScaleUnit}
+            accentBorder={accentBorder}
+          />
         )}
       </div>
 
@@ -370,7 +432,29 @@ export function InspectorPanel({
           {/* SCALE SECTION */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={sectionHead}>
-              <span style={sectionTitle}>Scale</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={sectionTitle}>Scale</span>
+                <button
+                  type="button"
+                  title="Lock Proportions"
+                  onClick={() => setLockProp((v) => !v)}
+                  style={{
+                    ...miniChip(false),
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: lockProp ? accentBorder : "#F0A8A8",
+                    backgroundColor: lockProp
+                      ? "rgba(94, 234, 212, 0.14)"
+                      : "rgba(248, 113, 113, 0.1)",
+                    border: lockProp
+                      ? `1px solid ${accentBorder}`
+                      : "1px solid rgba(248, 113, 113, 0.45)",
+                  }}
+                >
+                  <Icon name={lockProp ? "lock" : "unlock"} size={9} />
+                </button>
+              </div>
               <TransformSectionActions
                 modified={isScaleModified}
                 acceptTitle="Accept scale as default"
@@ -394,12 +478,12 @@ export function InspectorPanel({
               {(["x", "y", "z"] as const).map((ax) => (
                 <label key={ax} style={lbl}>
                   <span>
-                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> ({dimUnit})
+                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> ({scaleUnit})
                   </span>
                   <input
                     className="adivi-num-input"
                     type="number"
-                    step={dimUnit === "%" ? "0.5" : SNAP_CM_STEP}
+                    step={scaleUnit === "%" ? "0.5" : lengthStep(scaleUnit)}
                     value={dimInputs[ax]}
                     onChange={(e) => {
                       const raw = e.target.value
@@ -408,10 +492,11 @@ export function InspectorPanel({
                         setDimInputs((p) => ({ ...p, [ax]: raw }))
                         if (!isNaN(num) && num > 0) {
                           const k = `s${ax}` as "sx" | "sy" | "sz"
-                          const s =
-                            dimUnit === "%"
-                              ? num / 100
-                              : num / selectedObj.baseDim[ax]
+                          const s = scaleFactorFromDisplay(
+                            num,
+                            selectedObj.baseDim[ax],
+                            scaleUnit
+                          )
                           patchObject(
                             selectedObj.id,
                             (o) => ({
@@ -422,32 +507,43 @@ export function InspectorPanel({
                           )
                         }
                       } else {
-                        const s =
-                          dimUnit === "%"
-                            ? num / 100
-                            : num / selectedObj.baseDim[ax]
-                        setDimInputs(
-                          dimUnit === "%"
-                            ? {
-                                x: ax === "x" ? raw : fmt(s * 100),
-                                y: ax === "y" ? raw : fmt(s * 100),
-                                z: ax === "z" ? raw : fmt(s * 100),
-                              }
-                            : {
-                                x:
-                                  ax === "x"
-                                    ? raw
-                                    : fmt(selectedObj.baseDim.x * s),
-                                y:
-                                  ax === "y"
-                                    ? raw
-                                    : fmt(selectedObj.baseDim.y * s),
-                                z:
-                                  ax === "z"
-                                    ? raw
-                                    : fmt(selectedObj.baseDim.z * s),
-                              }
+                        const s = scaleFactorFromDisplay(
+                          num,
+                          selectedObj.baseDim[ax],
+                          scaleUnit
                         )
+                        setDimInputs({
+                          x:
+                            ax === "x"
+                              ? raw
+                              : fmt(
+                                  scaleSizeToDisplay(
+                                    selectedObj.baseDim.x * s,
+                                    selectedObj.baseDim.x,
+                                    scaleUnit
+                                  )
+                                ),
+                          y:
+                            ax === "y"
+                              ? raw
+                              : fmt(
+                                  scaleSizeToDisplay(
+                                    selectedObj.baseDim.y * s,
+                                    selectedObj.baseDim.y,
+                                    scaleUnit
+                                  )
+                                ),
+                          z:
+                            ax === "z"
+                              ? raw
+                              : fmt(
+                                  scaleSizeToDisplay(
+                                    selectedObj.baseDim.z * s,
+                                    selectedObj.baseDim.z,
+                                    scaleUnit
+                                  )
+                                ),
+                        })
                         patchObject(
                           selectedObj.id,
                           (o) => ({
@@ -512,12 +608,13 @@ export function InspectorPanel({
               {(["x", "y", "z"] as const).map((ax) => (
                 <label key={ax} style={lbl}>
                   <span>
-                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> (cm)
+                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> (
+                    {lengthUnit})
                   </span>
                   <input
                     className="adivi-num-input"
                     type="number"
-                    step={SNAP_CM_STEP}
+                    step={lengthStep(lengthUnit)}
                     value={posInputs[ax]}
                     onChange={(e) => {
                       const raw = e.target.value
@@ -528,7 +625,10 @@ export function InspectorPanel({
                           selectedObj.id,
                           (o) => ({
                             ...o,
-                            pos: { ...o.pos, [ax]: num },
+                            pos: {
+                              ...o.pos,
+                              [ax]: lengthFromDisplay(num, lengthUnit),
+                            },
                           }),
                           false
                         )

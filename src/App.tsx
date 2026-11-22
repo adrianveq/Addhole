@@ -189,7 +189,8 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
   const [isTurntable, setIsTurntable] = React.useState(
     viewerDefaults?.autoRotate ?? false
   )
-  const [dimUnit, setDimUnit] = React.useState<DimUnit>("cm")
+  const [lengthUnit, setLengthUnit] = React.useState<"cm" | "mm">("cm")
+  const [scaleUnit, setScaleUnit] = React.useState<DimUnit>("cm")
   const [lockProp, setLockProp] = React.useState(true)
   const [copiedShot, setCopiedShot] = React.useState(false)
 
@@ -555,30 +556,40 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     const sizeX = snapCm(baseDim.x * scale.sx)
     const sizeY = snapCm(baseDim.y * scale.sy)
     const sizeZ = snapCm(baseDim.z * scale.sz)
-    setDimInputs(
-      dimUnit === "%"
-        ? {
-            x: fmt((sizeX / baseDim.x) * 100),
-            y: fmt((sizeY / baseDim.y) * 100),
-            z: fmt((sizeZ / baseDim.z) * 100),
-          }
-        : {
-            x: fmt(sizeX),
-            y: fmt(sizeY),
-            z: fmt(sizeZ),
-          }
-    )
+    setDimInputs({
+      x: fmt(
+        scaleUnit === "%"
+          ? (sizeX / baseDim.x) * 100
+          : scaleUnit === "mm"
+            ? sizeX * 10
+            : sizeX
+      ),
+      y: fmt(
+        scaleUnit === "%"
+          ? (sizeY / baseDim.y) * 100
+          : scaleUnit === "mm"
+            ? sizeY * 10
+            : sizeY
+      ),
+      z: fmt(
+        scaleUnit === "%"
+          ? (sizeZ / baseDim.z) * 100
+          : scaleUnit === "mm"
+            ? sizeZ * 10
+            : sizeZ
+      ),
+    })
     setPosInputs({
-      x: fmt(snapCm(pos.x)),
-      y: fmt(snapCm(pos.y)),
-      z: fmt(snapCm(pos.z)),
+      x: fmt(lengthUnit === "mm" ? snapCm(pos.x) * 10 : snapCm(pos.x)),
+      y: fmt(lengthUnit === "mm" ? snapCm(pos.y) * 10 : snapCm(pos.y)),
+      z: fmt(lengthUnit === "mm" ? snapCm(pos.z) * 10 : snapCm(pos.z)),
     })
     setRotInputs({
       x: fmt(snapRotationDeg(rot.x)),
       y: fmt(snapRotationDeg(rot.y)),
       z: fmt(snapRotationDeg(rot.z)),
     })
-  }, [selectedObj, dimUnit])
+  }, [selectedObj, scaleUnit, lengthUnit])
 
   React.useEffect(() => {
     if (toolMode !== "rotate" && layOnFaceMode) setLayOnFaceMode(false)
@@ -1742,6 +1753,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         setLayOnFaceMode={setLayOnFaceMode}
         marqueeSelectMode={marqueeSelectMode}
         editingGroupState={editingGroupState}
+        enterGroupIsolation={enterGroupIsolation}
         exitGroupIsolation={exitGroupIsolation}
         applyLayOnFace={applyLayOnFace}
         setPlateSettingsOpen={setPlateSettingsOpen}
@@ -1752,6 +1764,8 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         commitObjects={commitObjects}
         historyRef={historyRef}
         syncHistFlags={syncHistFlags}
+        lengthUnit={lengthUnit}
+        scaleUnit={scaleUnit}
       />
 
       {/* RIGHT-CLICK (PPM) CONTEXT MENU */}
@@ -2110,8 +2124,10 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
           onAcceptScale={handleAcceptScale}
           onAcceptPos={handleAcceptPos}
           onAcceptRot={handleAcceptRot}
-          dimUnit={dimUnit}
-          setDimUnit={setDimUnit}
+          lengthUnit={lengthUnit}
+          setLengthUnit={setLengthUnit}
+          scaleUnit={scaleUnit}
+          setScaleUnit={setScaleUnit}
           lockProp={lockProp}
           setLockProp={setLockProp}
           dimInputs={dimInputs}

@@ -3,10 +3,12 @@ import * as React from "react"
 export function Icon({
   name,
   size = 14,
+  strokeWidth = 2,
   accent = "#14B8A6",
 }: {
   name: string
   size?: number
+  strokeWidth?: number
   accent?: string
 }) {
   const p = {
@@ -15,7 +17,7 @@ export function Icon({
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
-    strokeWidth: 2,
+    strokeWidth,
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
     style: { display: "block" as const },
@@ -125,15 +127,27 @@ export function Icon({
       </>
     ),
     lock: (
-      <>
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </>
+      <path
+        fill="currentColor"
+        stroke="none"
+        d="M17 11h1.75A1.25 1.25 0 0 1 20 12.25v8.5A1.25 1.25 0 0 1 18.75 22H5.25A1.25 1.25 0 0 1 4 20.75v-8.5A1.25 1.25 0 0 1 5.25 11H7V8a5 5 0 0 1 10 0v3zm-8 0h6V8a3 3 0 1 0-6 0v3z"
+      />
     ),
     unlock: (
       <>
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+        <path
+          fill="currentColor"
+          stroke="none"
+          d="M17 11h1.75A1.25 1.25 0 0 1 20 12.25v8.5A1.25 1.25 0 0 1 18.75 22H5.25A1.25 1.25 0 0 1 4 20.75v-8.5A1.25 1.25 0 0 1 5.25 11H17z"
+        />
+        <path
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M8.5 11V7.85a3.75 3.75 0 0 1 6.35-1.85l2.2 2.2"
+        />
       </>
     ),
     reset: (

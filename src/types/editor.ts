@@ -2,7 +2,10 @@ import * as THREE from "three"
 import * as React from "react"
 
 export type ToolMode = "transform" | "move" | "rotate" | "scale"
-export type DimUnit = "cm" | "%"
+export type LengthUnit = "cm" | "mm"
+export type ScaleDimUnit = LengthUnit | "%"
+/** Scale can use %; position and mesh size use {@link LengthUnit}. */
+export type DimUnit = ScaleDimUnit
 export type BevelMode = "fillet" | "chamfer"
 export type SnapAction = "clipboard" | "file"
 
@@ -164,6 +167,7 @@ export interface SceneControllerHandle {
   layOnFaceMode: boolean
   marqueeSelectMode: boolean
   isEditingGroup: boolean
+  enterGroupIsolation: (groupId: string, initialChildIndex?: number) => void
   exitGroupIsolation: () => void
   applyLayOnFace: (id: string, normal: THREE.Vector3) => void
   captureCustomSnapshot: (opts: {

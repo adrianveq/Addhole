@@ -5,9 +5,16 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js"
 import {
   EditingGroupState,
   SceneControllerHandle,
+  LengthUnit,
+  ScaleDimUnit,
   SceneObject,
   ToolMode,
 } from "../types/editor"
+import {
+  lengthFromDisplay,
+  lengthToDisplay,
+  scaleSizeToDisplay,
+} from "../utils/dimUnits"
 import { extractCoplanarPatchGeometry } from "../three/geometryOps"
 import {
   buildBottomContactGeometry,
@@ -94,6 +101,7 @@ export interface ViewportCanvasProps {
   setLayOnFaceMode: React.Dispatch<React.SetStateAction<boolean>>
   marqueeSelectMode: boolean
   editingGroupState: EditingGroupState | null
+  enterGroupIsolation: (groupId: string, initialChildIndex?: number) => void
   exitGroupIsolation: (nextSelectedIdsAfterExit?: string[]) => Promise<void>
   applyLayOnFace: (objId: string, worldFaceNormal: THREE.Vector3) => void
   setPlateSettingsOpen: React.Dispatch<React.SetStateAction<boolean>>
@@ -106,6 +114,8 @@ export interface ViewportCanvasProps {
   commitObjects: (updater: (prev: SceneObject[]) => SceneObject[], recordHistory?: boolean) => void
   historyRef: React.MutableRefObject<{ past: SceneObject[][]; future: SceneObject[][] }>
   syncHistFlags: () => void
+  lengthUnit: LengthUnit
+  scaleUnit: ScaleDimUnit
 }
 
 export function ViewportCanvas(props: ViewportCanvasProps) {
@@ -132,6 +142,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     setLayOnFaceMode,
     marqueeSelectMode,
     editingGroupState,
+    enterGroupIsolation,
     exitGroupIsolation,
     applyLayOnFace,
     setPlateSettingsOpen,
@@ -142,9 +153,16 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     commitObjects,
     historyRef,
     syncHistFlags,
+    lengthUnit,
+    scaleUnit,
   } = props
 
   const mountRef = React.useRef<HTMLDivElement>(null)
+  const lengthUnitRef = React.useRef(lengthUnit)
+  const scaleUnitRef = React.useRef(scaleUnit)
+  const publishCalloutRef = React.useRef<(() => void) | null>(null)
+  lengthUnitRef.current = lengthUnit
+  scaleUnitRef.current = scaleUnit
   const cornerUiRef = React.useRef({
     hoverId: null as string | null,
     pinnedId: null as string | null,
@@ -380,6 +398,20 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     }
 
     const onContextMenu = (e: MouseEvent) => e.preventDefault()
+
+    const onDoubleClick = (e: MouseEvent) => {
+      if (sceneRef.current?.layOnFaceMode || sceneRef.current?.isEditingGroup) return
+      updateRay(e as unknown as PointerEvent)
+      const mHits = raycaster.intersectObjects(getInteractiveMeshes(), false)
+      if (mHits.length === 0) return
+      const clickedId = mHits[0].object.userData?.objId as string
+      if (!clickedId) return
+      const obj = (sceneRef.current?.latestObjects || []).find((o) => o.id === clickedId)
+      if (!obj || (obj.groupChildren?.length || 0) <= 1) return
+      e.preventDefault()
+      e.stopPropagation()
+      sceneRef.current?.enterGroupIsolation(clickedId, 0)
+    }
 
     const onPointerDown = (e: PointerEvent) => {
       setContextMenu(null)
@@ -940,10 +972,11 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           if (e.shiftKey) {
             cornerUiRef.current.proportionalDrag = true
             const k = fx
+            const su = scaleUnitRef.current
             setDimDraft({
-              x: fmt(base.x! * k),
-              y: fmt(base.y! * k),
-              z: fmt(base.z! * k),
+              x: fmt(scaleSizeToDisplay(base.x! * k, base.x!, su)),
+              y: fmt(scaleSizeToDisplay(base.y! * k, base.y!, su)),
+              z: fmt(scaleSizeToDisplay(base.z! * k, base.z!, su)),
             })
           } else {
             setDimDraft((draft) => {
@@ -1163,6 +1196,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
 
     const dom = renderer.domElement
     dom.addEventListener("contextmenu", onContextMenu)
+    dom.addEventListener("dblclick", onDoubleClick)
     dom.addEventListener("pointerdown", onPointerDown)
     window.addEventListener("pointermove", onPointerMove)
     window.addEventListener("pointerup", onPointerUp)
@@ -1258,7 +1292,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         if (start.behind || end.behind || mid.behind) continue
         edges.push({
           axis: edge.axis,
-          length: edge.length,
+          length: lengthToDisplay(edge.length, lengthUnitRef.current),
           color: TRANSFORM_AXIS_CSS[edge.axis],
           ex1: boxStart.x,
           ey1: boxStart.y,
@@ -1290,6 +1324,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       }
     }
 
+    publishCalloutRef.current = publishCornerCallout
     controls.addEventListener("change", publishCornerCallout)
 
     let raf = 0
@@ -1323,6 +1358,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       layOnFaceMode: false,
       marqueeSelectMode: false,
       isEditingGroup: false,
+      enterGroupIsolation: () => {},
       exitGroupIsolation: () => {},
       applyLayOnFace: (_id: string, _n: THREE.Vector3) => {},
       captureCustomSnapshot: async (opts: {
@@ -1424,11 +1460,13 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     sceneRef.current = internalHandle as any
 
     return () => {
+      publishCalloutRef.current = null
       cancelAnimationFrame(raf)
       controls.removeEventListener("change", publishCornerCallout)
       transformRig.dispose()
       ro.disconnect()
       dom.removeEventListener("contextmenu", onContextMenu)
+      dom.removeEventListener("dblclick", onDoubleClick)
       dom.removeEventListener("pointerdown", onPointerDown)
       window.removeEventListener("pointermove", onPointerMove)
       window.removeEventListener("pointerup", onPointerUp)
@@ -1519,6 +1557,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     st.showScaleRef = showScaleRef
     st.marqueeSelectMode = marqueeSelectMode
     st.isEditingGroup = Boolean(editingGroupState)
+    st.enterGroupIsolation = enterGroupIsolation
     st.exitGroupIsolation = exitGroupIsolation
     st.buildPlate.visible = showGrid
     st.refGroup.visible = showScaleRef
@@ -1538,6 +1577,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     showScaleRef,
     marqueeSelectMode,
     editingGroupState,
+    enterGroupIsolation,
     exitGroupIsolation,
     showGrid,
     isOrtho,
@@ -1829,6 +1869,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
   }, [cornerCallout])
 
   React.useEffect(() => {
+    publishCalloutRef.current?.()
+  }, [lengthUnit, scaleUnit])
+
+  React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return
       const tag = (e.target as HTMLElement | null)?.tagName
@@ -1874,12 +1918,15 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       planar?.edge ??
       corner?.edges.find((item) => item.axis === axis)
     if (!sign || !edge || edge.length < 1e-6) return
-    const nextLength = parseFloat(raw.replace(",", "."))
-    if (!Number.isFinite(nextLength) || nextLength <= 0) return
+    const nextDisplay = parseFloat(raw.replace(",", "."))
+    if (!Number.isFinite(nextDisplay) || nextDisplay <= 0) return
     const ui = cornerUiRef.current
     const isProportional =
       uniform || ui.proportionalPin || ui.proportionalEdit || ui.proportionalDrag
-    const lengths: Partial<Record<DimAxis, number>> = { ...(ui.snapshot?.id === handleId ? ui.snapshot.length : {}) }
+    /** Snapshot and rig edges are in centimetres; inputs use {@link lengthUnit}. */
+    const lengths: Partial<Record<DimAxis, number>> = {
+      ...(ui.snapshot?.id === handleId ? ui.snapshot.length : {}),
+    }
     if (corner) {
       for (const item of corner.edges) lengths[item.axis] = lengths[item.axis] ?? item.length
     } else if (height) {
@@ -1887,9 +1934,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     } else if (planar) {
       lengths[planar.edge.axis] = lengths[planar.edge.axis] ?? planar.edge.length
     }
-    const prevVal = lengths[axis] ?? edge.length
-    if (!(prevVal > 0)) return
-    if (Math.abs(nextLength - Number(fmt(prevVal))) < 1e-4) return
+    const prevCm = lengths[axis] ?? edge.length
+    const nextCm = lengthFromDisplay(nextDisplay, lengthUnit)
+    if (!(prevCm > 0)) return
+    if (Math.abs(nextCm - prevCm) < 1e-4) return
     const frame = rig.getFrame()
     const half = { x: frame.hx, y: frame.hy, z: frame.hz }
     const kind = height || planar ? "face" : "corner"
@@ -1898,8 +1946,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       sign,
       half,
       axis,
-      prevVal,
-      nextLength,
+      prevCm,
+      nextCm,
       isProportional,
       symmetric
     )
@@ -1919,7 +1967,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         for (const key of ["x", "y", "z"] as const) {
           if (key === axis) continue
           const prev = lengths[key]
-          if (prev && prev > 0) next[key] = fmt(prev * factor)
+          if (prev && prev > 0)
+            next[key] = fmt(lengthToDisplay(prev * factor, lengthUnit))
         }
         return next
       })
@@ -1944,6 +1993,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       {cornerCallout && (
         <CornerDimensionCallout
           callout={cornerCallout}
+          lengthUnit={lengthUnit}
           drafts={dimDraft}
           onDraft={(axis, value) => setDimDraft((draft) => ({ ...draft, [axis]: value }))}
           onFocusAxis={(axis, handleId) => {
@@ -1952,7 +2002,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
             cornerUiRef.current.proportionalEdit = false
             if (cornerCallout && cornerCallout.id === handleId) {
               const length: Partial<Record<DimAxis, number>> = {}
-              for (const edge of cornerCallout.edges) length[edge.axis] = edge.length
+              for (const edge of cornerCallout.edges) {
+                length[edge.axis] = lengthFromDisplay(edge.length, lengthUnit)
+              }
               cornerUiRef.current.snapshot = { id: handleId, length }
             }
           }}
@@ -2072,6 +2124,7 @@ function blockIdlePointer(e: React.PointerEvent) {
 
 function CornerDimensionCallout({
   callout,
+  lengthUnit,
   drafts,
   onDraft,
   onFocusAxis,
@@ -2080,6 +2133,7 @@ function CornerDimensionCallout({
   onCancel,
 }: {
   callout: DimCalloutView
+  lengthUnit: LengthUnit
   drafts: Partial<Record<DimAxis, string>>
   onDraft: (axis: DimAxis, value: string) => void
   onFocusAxis: (axis: DimAxis, handleId: string) => void
@@ -2169,7 +2223,7 @@ function CornerDimensionCallout({
             className="adivi-num-input"
             type="text"
             inputMode="decimal"
-            aria-label={`${edge.axis.toUpperCase()} dimension in centimetres`}
+            aria-label={`${edge.axis.toUpperCase()} dimension in ${lengthUnit}`}
             value={drafts[edge.axis] ?? fmt(edge.length)}
             onFocus={(e) => {
               onFocusAxis(edge.axis, callout.id)

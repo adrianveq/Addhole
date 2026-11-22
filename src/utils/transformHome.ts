@@ -1,3 +1,8 @@
+import {
+  baseDimCmFromGeometry,
+  cloneGeometryWithScale,
+  findConnectedComponents,
+} from "../three/geometryOps"
 import { SceneObject, TransformHome } from "../types/editor"
 
 export const IDENTITY_TRANSFORM_HOME: TransformHome = {
@@ -39,13 +44,13 @@ export function isRotAwayFromHome(o: SceneObject): boolean {
 
 export function acceptScaleAsHome(o: SceneObject): SceneObject {
   const home = getTransformHome(o)
+  const { sx, sy, sz } = o.scale
+  const geometry = cloneGeometryWithScale(o.geometry, sx, sy, sz)
   return {
     ...o,
-    baseDim: {
-      x: o.baseDim.x * o.scale.sx,
-      y: o.baseDim.y * o.scale.sy,
-      z: o.baseDim.z * o.scale.sz,
-    },
+    geometry,
+    baseDim: baseDimCmFromGeometry(geometry),
+    partCount: findConnectedComponents(geometry).length,
     scale: { sx: 1, sy: 1, sz: 1 },
     transformHome: {
       ...home,

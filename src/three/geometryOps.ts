@@ -16,6 +16,43 @@ export function normalizeBottomCenter(g: THREE.BufferGeometry): THREE.BufferGeom
   return g
 }
 
+/** Axis-aligned size of geometry in display centimetres (mm world ÷ 10). */
+export function baseDimCmFromGeometry(g: THREE.BufferGeometry): {
+  x: number
+  y: number
+  z: number
+} {
+  g.computeBoundingBox()
+  const bb = g.boundingBox
+  if (!bb || bb.isEmpty()) return { x: 2, y: 2, z: 2 }
+  return {
+    x: Math.max(0.01, (bb.max.x - bb.min.x) / 10),
+    y: Math.max(0.01, (bb.max.y - bb.min.y) / 10),
+    z: Math.max(0.01, (bb.max.z - bb.min.z) / 10),
+  }
+}
+
+/** Bake mesh `scale` into vertex positions; returns the same geometry when scale is ~1. */
+export function cloneGeometryWithScale(
+  geom: THREE.BufferGeometry,
+  sx: number,
+  sy: number,
+  sz: number
+): THREE.BufferGeometry {
+  if (
+    Math.abs(sx - 1) < 1e-6 &&
+    Math.abs(sy - 1) < 1e-6 &&
+    Math.abs(sz - 1) < 1e-6
+  ) {
+    return geom
+  }
+  const g = geom.clone()
+  g.applyMatrix4(new THREE.Matrix4().makeScale(sx, sy, sz))
+  g.computeBoundingBox()
+  g.computeVertexNormals()
+  return g
+}
+
 export function createRoundedBoxGeometry(
   dimMm: { x: number; y: number; z: number },
   bevelMm: number,
