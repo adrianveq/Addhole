@@ -16,7 +16,7 @@ import {
   createBuildPlate,
 } from "../three/sceneHelpers"
 import { buildModeGizmo } from "../three/gizmo"
-import { createTransformBoxRig } from "../three/transformBoxRig"
+import { createTransformBoxRig, rigScaleFactors } from "../three/transformBoxRig"
 import { parse3mfToGeometry, parseStepToGeometry } from "../utils/fileLoaders"
 
 export interface ViewportCanvasProps {
@@ -231,11 +231,13 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       >
       startAngle: number
       scaleDrag: null | {
+        kind: "corner" | "face"
         sign: THREE.Vector3
-        dir: THREE.Vector3
-        anchor: THREE.Vector3
-        span: number
+        center: THREE.Vector3
         quat: THREE.Quaternion
+        hx: number
+        hy: number
+        hz: number
       }
       rotBasis: null | { axis: THREE.Vector3; xDir: THREE.Vector3; yDir: THREE.Vector3 }
     } = null
@@ -266,23 +268,21 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           quat: THREE.Quaternion
         }
       > = {}
+      const objs = sceneRef.current?.latestObjects || []
+      const euler = new THREE.Euler(0, 0, 0, "ZYX")
       for (const id of ids) {
-        const m = meshMap.get(id)
-        if (m) {
-          map[id] = {
-            pos: {
-              x: m.position.x / 10,
-              y: m.position.y / 10,
-              z: m.position.z / 10,
-            },
-            rot: {
-              x: THREE.MathUtils.radToDeg(m.rotation.x),
-              y: THREE.MathUtils.radToDeg(m.rotation.y),
-              z: THREE.MathUtils.radToDeg(m.rotation.z),
-            },
-            scale: { sx: m.scale.x, sy: m.scale.y, sz: m.scale.z },
-            quat: m.quaternion.clone(),
-          }
+        const o = objs.find((item) => item.id === id)
+        if (!o || !meshMap.get(id)) continue
+        euler.set(
+          THREE.MathUtils.degToRad(o.rot.x),
+          THREE.MathUtils.degToRad(o.rot.y),
+          THREE.MathUtils.degToRad(o.rot.z)
+        )
+        map[id] = {
+          pos: { x: o.pos.x, y: o.pos.y, z: o.pos.z },
+          rot: { x: o.rot.x, y: o.rot.y, z: o.rot.z },
+          scale: { sx: o.scale.sx, sy: o.scale.sy, sz: o.scale.sz },
+          quat: new THREE.Quaternion().setFromEuler(euler),
         }
       }
       return map
@@ -418,41 +418,54 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           const ud = axisHit.object.userData
           const axis = ud.gizmoAxis as string
           if (ud.signX !== undefined) {
+            const kind = ud.handleKind === "face" ? "face" : "corner"
             const sign = { x: ud.signX as number, y: ud.signY as number, z: ud.signZ as number }
-            const info = transformRig.getScaleDrag(sign)
-            const toCam = activeCam.position.clone().sub(transformRig.root.position)
-            const planeN = toCam.addScaledVector(info.direction, -toCam.dot(info.direction))
+            const frame = transformRig.getFrame()
+            const dir = new THREE.Vector3(
+              sign.x,
+              sign.y,
+              kind === "corner" ? 0 : sign.z
+            )
+            if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1)
+            else dir.normalize()
+            dir.transformDirection(transformRig.root.matrixWorld)
+            const toCam = activeCam.position.clone().sub(frame.center)
+            const planeN = toCam.addScaledVector(dir, -toCam.dot(dir))
             if (planeN.lengthSq() < 1e-8) planeN.set(0, 0, 1)
             else planeN.normalize()
             if (
-              startAxisDrag(axis, transformRig.root.position, primaryId, {
+              startAxisDrag(axis, frame.center, primaryId, {
                 planeNormal: planeN,
                 scaleDrag: {
+                  kind,
                   sign: new THREE.Vector3(sign.x, sign.y, sign.z),
-                  dir: info.direction,
-                  anchor: info.anchor,
-                  span: info.span,
-                  quat: info.quaternion,
+                  center: frame.center.clone(),
+                  quat: frame.quaternion,
+                  hx: frame.hx,
+                  hy: frame.hy,
+                  hz: frame.hz,
                 },
               })
             ) {
               return
             }
           } else if (axis === "rx" || axis === "ry" || axis === "rz") {
-            const local = new THREE.Vector3(
-              axis === "rx" ? 1 : 0,
-              axis === "ry" ? 1 : 0,
-              axis === "rz" ? 1 : 0
-            )
-            local.transformDirection(transformRig.root.matrixWorld)
-            const ref =
-              Math.abs(local.z) > 0.85 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
-            const xDir = new THREE.Vector3().crossVectors(ref, local).normalize()
-            const yDir = new THREE.Vector3().crossVectors(local, xDir).normalize()
+            const frame = transformRig.getFrame()
+            const localAxis = (x: number, y: number, z: number) =>
+              new THREE.Vector3(x, y, z).applyQuaternion(frame.quaternion)
+            const xAxis = localAxis(1, 0, 0)
+            const yAxis = localAxis(0, 1, 0)
+            const zAxis = localAxis(0, 0, 1)
+            const basis =
+              axis === "rx"
+                ? { axis: xAxis, xDir: yAxis, yDir: zAxis }
+                : axis === "ry"
+                  ? { axis: yAxis, xDir: zAxis, yDir: xAxis }
+                  : { axis: zAxis, xDir: xAxis, yDir: yAxis }
             if (
-              startAxisDrag(axis, transformRig.root.position, primaryId, {
-                planeNormal: local.clone(),
-                rotBasis: { axis: local, xDir, yDir },
+              startAxisDrag(axis, frame.center, primaryId, {
+                planeNormal: basis.axis.clone(),
+                rotBasis: basis,
               })
             ) {
               return
@@ -682,10 +695,18 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const doCommit = commitRef.current
 
       if (activeDrag.scaleDrag) {
-        const { sign, dir, anchor, span, quat } = activeDrag.scaleDrag
+        const { kind, sign, center, quat, hx, hy, hz } = activeDrag.scaleDrag
         if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return
-        const delta = hitPt.clone().sub(startHit).dot(dir)
-        const factor = Math.max(0.05, (span + delta) / Math.max(span, 0.5))
+        const localDelta = hitPt.clone().sub(startHit).applyQuaternion(quat.clone().invert())
+        const { fx, fy, fz, anchor } = rigScaleFactors(
+          kind,
+          sign,
+          { x: hx, y: hy, z: hz },
+          localDelta,
+          e.shiftKey,
+          e.ctrlKey || e.altKey || e.metaKey
+        )
+        const anchorWorld = anchor.applyQuaternion(quat).add(center)
         const qInv = quat.clone().invert()
         doCommit(
           (prev) =>
@@ -693,14 +714,14 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               const st = startTransforms[o.id]
               if (!st) return o
               const rel = new THREE.Vector3(st.pos.x * 10, st.pos.y * 10, st.pos.z * 10).sub(
-                anchor
+                anchorWorld
               )
               rel.applyQuaternion(qInv)
-              if (sign.x !== 0) rel.x *= factor
-              if (sign.y !== 0) rel.y *= factor
-              if (sign.z !== 0) rel.z *= factor
+              rel.x *= fx
+              rel.y *= fy
+              rel.z *= fz
               rel.applyQuaternion(quat)
-              const next = anchor.clone().add(rel)
+              const next = anchorWorld.clone().add(rel)
               return {
                 ...o,
                 pos: {
@@ -709,9 +730,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                   z: Number((next.z / 10).toFixed(2)),
                 },
                 scale: {
-                  sx: Number((st.scale.sx * (sign.x !== 0 ? factor : 1)).toFixed(3)),
-                  sy: Number((st.scale.sy * (sign.y !== 0 ? factor : 1)).toFixed(3)),
-                  sz: Number((st.scale.sz * (sign.z !== 0 ? factor : 1)).toFixed(3)),
+                  sx: Number((st.scale.sx * fx).toFixed(3)),
+                  sy: Number((st.scale.sy * fy).toFixed(3)),
+                  sz: Number((st.scale.sz * fz).toFixed(3)),
                 },
               }
             }),

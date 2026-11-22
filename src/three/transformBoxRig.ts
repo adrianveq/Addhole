@@ -2,15 +2,12 @@ import * as THREE from "three"
 
 /**
  * Oriented bounding-box manipulator for ToolMode "transform".
- *
- * The rig uses the primary mesh quaternion (group frame for multi-select)
- * and the geometry bounds in that frame, so the box rotates with the model.
- *
- * Scale handles carry local signs in {-1, 0, 1}. ViewportCanvas scales about
- * the opposite face/corner and keeps that anchor fixed in world space.
+ * The rig follows the primary mesh quaternion, so the box and handles
+ * rotate with the model. Scale signs are in {-1, 0, 1}: corners are XY
+ * only (z = 0). ViewportCanvas freezes this frame on pointerdown.
  */
 export type TransformHandleAxis =
-  | "sall"
+  | "sxy"
   | "sx"
   | "sy"
   | "sz"
@@ -19,11 +16,12 @@ export type TransformHandleAxis =
   | "ry"
   | "rz"
 
-export interface TransformScaleDrag {
+export interface TransformFrame {
+  center: THREE.Vector3
   quaternion: THREE.Quaternion
-  anchor: THREE.Vector3
-  direction: THREE.Vector3
-  span: number
+  hx: number
+  hy: number
+  hz: number
 }
 
 export interface TransformBoxRig {
@@ -33,18 +31,19 @@ export interface TransformBoxRig {
   hasTargets: () => boolean
   setHovered: (handleId: string | null) => void
   getHitTargets: () => THREE.Object3D[]
-  /** Last target is the orientation source. Signs point at the grabbed handle. */
-  getScaleDrag: (sign: { x: number; y: number; z: number }) => TransformScaleDrag
+  getFrame: () => TransformFrame
   update: (camera: THREE.Camera) => void
   dispose: () => void
 }
 
-type Extents = { hx: number; hy: number; hz: number; hs: number }
+type Extents = { hx: number; hy: number; hz: number }
 type Sign = -1 | 0 | 1
+type ScaleKind = "corner" | "face"
 
 type ScaleSlot = {
   id: string
-  axis: "sall" | "sx" | "sy" | "sz"
+  axis: "sxy" | "sx" | "sy" | "sz"
+  kind: ScaleKind
   sign: { x: Sign; y: Sign; z: Sign }
   color: number
   size: number
@@ -53,15 +52,104 @@ type ScaleSlot = {
 
 type RotAxis = "rx" | "ry" | "rz"
 
-const ARC_STEPS = 12
-const ARC_SWEEP = 0.9
-const ARC_START = -0.15
 const UP = new THREE.Vector3(0, 1, 0)
-const FACE_COLOR = {
-  sx: 0xf87171,
-  sy: 0x4ade80,
-  sz: 0x60a5fa,
-  sall: 0xf8fafc,
+const RIG_Z = new THREE.Vector3(0, 0, 1)
+const Z_SHAFT = 4.2
+const Z_HEAD = 4.6
+const MIN_SCALE = 0.05
+const AXIS_COLORS = {
+  x: 0xef4444,
+  y: 0x22c55e,
+  z: 0x3b82f6,
+}
+const CORNER_COLOR = 0xf8fafc
+const ARC_START = Math.PI * 0.2
+const ARC_END = Math.PI * 0.8
+const ARC_RADIUS = 4.35
+const ARC_TUBE = 0.4
+const ARC_STEPS = 16
+
+const spanFactor = (
+  active: number,
+  half: number,
+  delta: number,
+  symmetric: boolean
+) => {
+  if (!active || half < 1e-4) return 1
+  const span = symmetric ? half : 2 * half
+  return Math.max(MIN_SCALE, (span + active * delta) / span)
+}
+
+const uniformKFromVector = (vx: number, vy: number, vz: number, localDelta: THREE.Vector3) => {
+  const v = new THREE.Vector3(vx, vy, vz)
+  const len = v.length()
+  if (len < 1e-4) return 1
+  return Math.max(MIN_SCALE, (len + localDelta.dot(v.clone().normalize())) / len)
+}
+
+/** Per-axis factors from the pointer-down half extents. Anchor is rig-local. */
+export function rigScaleFactors(
+  kind: ScaleKind,
+  sign: { x: number; y: number; z: number },
+  half: { x: number; y: number; z: number },
+  localDelta: THREE.Vector3,
+  uniform: boolean,
+  symmetric: boolean
+) {
+  const rawX = spanFactor(sign.x, half.x, localDelta.x, symmetric)
+  const rawY = spanFactor(sign.y, half.y, localDelta.y, symmetric)
+  const rawZ = spanFactor(sign.z, half.z, localDelta.z, symmetric)
+
+  let fx = 1
+  let fy = 1
+  let fz = 1
+
+  if (uniform) {
+    let k = 1
+    if (kind === "corner") {
+      if (symmetric) {
+        k = uniformKFromVector(
+          sign.x * half.x,
+          sign.y * half.y,
+          sign.z * half.z,
+          localDelta
+        )
+      } else {
+        const ax = -sign.x * half.x
+        const ay = -sign.y * half.y
+        const az = -half.z
+        k = uniformKFromVector(
+          sign.x * half.x - ax,
+          sign.y * half.y - ay,
+          sign.z * half.z - az,
+          localDelta
+        )
+      }
+    } else {
+      k = sign.x ? rawX : sign.y ? rawY : rawZ
+    }
+    fx = fy = fz = k
+  } else if (kind === "corner") {
+    fx = spanFactor(sign.x, half.x, localDelta.x, symmetric)
+    fy = spanFactor(sign.y, half.y, localDelta.y, symmetric)
+    fz = 1
+  } else {
+    fx = sign.x ? rawX : 1
+    fy = sign.y ? rawY : 1
+    fz = sign.z ? rawZ : 1
+  }
+
+  const anchor = symmetric
+    ? new THREE.Vector3(0, 0, 0)
+    : uniform && kind === "corner"
+      ? new THREE.Vector3(-sign.x * half.x, -sign.y * half.y, -half.z)
+      : new THREE.Vector3(
+          sign.x ? -sign.x * half.x : 0,
+          sign.y ? -sign.y * half.y : 0,
+          kind === "corner" ? 0 : sign.z ? -sign.z * half.z : 0
+        )
+
+  return { fx, fy, fz, anchor }
 }
 
 function depthPair(color: number) {
@@ -98,9 +186,10 @@ function scaleSlots(): ScaleSlot[] {
       for (const z of [-1, 1] as const) {
         slots.push({
           id: `corner-${x}${y}${z}`,
-          axis: "sall",
+          axis: "sxy",
+          kind: "corner",
           sign: { x, y, z },
-          color: FACE_COLOR.sall,
+          color: CORNER_COLOR,
           size: 1,
           place: (e, out) => out.set(x * e.hx, y * e.hy, z * e.hz),
         })
@@ -115,8 +204,9 @@ function scaleSlots(): ScaleSlot[] {
   ): ScaleSlot => ({
     id,
     axis,
+    kind: "face",
     sign,
-    color: FACE_COLOR[axis],
+    color: AXIS_COLORS[axis === "sx" ? "x" : axis === "sy" ? "y" : "z"],
     size: 0.86,
     place,
   })
@@ -129,6 +219,61 @@ function scaleSlots(): ScaleSlot[] {
     face("height-z-", "sz", { x: 0, y: 0, z: -1 }, (e, out) => out.set(0, 0, -e.hz))
   )
   return slots
+}
+
+/** 110° arch in local XY, peak toward +Y. Group rotation places it; no billboard. */
+function createRotationArc(color: number, axis: RotAxis, hitMat: THREE.Material) {
+  const letter = axis.slice(1) as "x" | "y" | "z"
+  const meta = { gizmoAxis: axis, axis: letter, handleId: `rot-${axis}` }
+  const mark = (obj: THREE.Object3D) => {
+    obj.userData = meta
+    obj.frustumCulled = false
+  }
+  const group = new THREE.Group()
+  group.name = `rot-${axis}`
+  const pts: THREE.Vector3[] = []
+  for (let i = 0; i <= ARC_STEPS; i++) {
+    const a = ARC_START + ((ARC_END - ARC_START) * i) / ARC_STEPS
+    pts.push(new THREE.Vector3(Math.cos(a) * ARC_RADIUS, Math.sin(a) * ARC_RADIUS, 0))
+  }
+  const curve = new THREE.CatmullRomCurve3(pts)
+  const mats = depthPair(color)
+  const headMats = depthPair(color)
+  const tubeGeo = new THREE.TubeGeometry(curve, ARC_STEPS, ARC_TUBE, 5, false)
+  const hitGeo = new THREE.TubeGeometry(curve, ARC_STEPS, ARC_TUBE * 2.7, 6, false)
+  const tube = new THREE.Mesh(tubeGeo, mats.front)
+  const ghost = new THREE.Mesh(tubeGeo, mats.back)
+  const hit = new THREE.Mesh(hitGeo, hitMat)
+  tube.renderOrder = 1002
+  ghost.renderOrder = 1001
+  mark(tube)
+  mark(hit)
+  const coneGeo = new THREE.ConeGeometry(1.05, 2.6, 10)
+  const heads: THREE.Mesh[] = []
+  const addHead = (angle: number, dir: THREE.Vector3) => {
+    const g = new THREE.Group()
+    const cone = new THREE.Mesh(coneGeo, headMats.front)
+    const coneGhost = new THREE.Mesh(coneGeo, headMats.back)
+    cone.renderOrder = 1002
+    coneGhost.renderOrder = 1001
+    mark(cone)
+    g.add(coneGhost, cone)
+    g.position.set(Math.cos(angle) * ARC_RADIUS, Math.sin(angle) * ARC_RADIUS, 0)
+    g.position.addScaledVector(dir, 0.85)
+    g.quaternion.setFromUnitVectors(UP, dir)
+    group.add(g)
+    heads.push(cone)
+  }
+  addHead(
+    ARC_END,
+    new THREE.Vector3(-Math.sin(ARC_END), Math.cos(ARC_END), 0).normalize()
+  )
+  addHead(
+    ARC_START,
+    new THREE.Vector3(Math.sin(ARC_START), -Math.cos(ARC_START), 0).normalize()
+  )
+  group.add(ghost, tube, hit)
+  return { axis, letter, group, mats, headMats, tube, hit, heads, tubeGeo, hitGeo, coneGeo }
 }
 
 export function createTransformBoxRig(): TransformBoxRig {
@@ -148,6 +293,7 @@ export function createTransformBoxRig(): TransformBoxRig {
       transparent: true,
       opacity: 0.48,
       depthTest: true,
+      depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
@@ -160,9 +306,8 @@ export function createTransformBoxRig(): TransformBoxRig {
 
   const cubeGeo = new THREE.BoxGeometry(2.7, 2.7, 2.7)
   const cubeHitGeo = new THREE.BoxGeometry(5.4, 5.4, 5.4)
-  const pickGeo = new THREE.SphereGeometry(1, 8, 6)
   const invisible = new THREE.MeshBasicMaterial({ visible: false })
-  disposables.push(cubeGeo, cubeHitGeo, pickGeo, invisible, boxLines.geometry, boxLines.material)
+  disposables.push(cubeGeo, cubeHitGeo, invisible, boxLines.geometry, boxLines.material)
 
   const scaleHandles = scaleSlots().map((slot) => {
     const { front, back } = depthPair(slot.color)
@@ -176,6 +321,7 @@ export function createTransformBoxRig(): TransformBoxRig {
     hit.userData = {
       gizmoAxis: slot.axis,
       handleId: slot.id,
+      handleKind: slot.kind,
       signX: slot.sign.x,
       signY: slot.sign.y,
       signZ: slot.sign.z,
@@ -189,77 +335,42 @@ export function createTransformBoxRig(): TransformBoxRig {
     return { ...slot, group, front, back }
   })
 
-  const arrowMats = depthPair(0x3b82f6)
+  const arrowMats = depthPair(AXIS_COLORS.z)
   const arrow = new THREE.Group()
   arrow.name = "move-z"
-  const shaftGeo = new THREE.CylinderGeometry(0.42, 0.42, 15, 10)
-  const headGeo = new THREE.ConeGeometry(1.65, 4.6, 14)
-  const arrowHitGeo = new THREE.CylinderGeometry(3.1, 3.1, 20, 8)
+  const shaftGeo = new THREE.CylinderGeometry(0.42, 0.42, Z_SHAFT, 10)
+  const headGeo = new THREE.ConeGeometry(1.65, Z_HEAD, 14)
+  const arrowHitGeo = new THREE.CylinderGeometry(2.5, 2.5, Z_SHAFT + Z_HEAD, 8)
   const shaft = new THREE.Mesh(shaftGeo, arrowMats.front)
   const shaftGhost = new THREE.Mesh(shaftGeo, arrowMats.back)
-  shaft.position.y = 7.5
-  shaftGhost.position.y = 7.5
+  shaft.position.y = Z_SHAFT / 2
+  shaftGhost.position.y = Z_SHAFT / 2
   shaft.renderOrder = 1002
   shaftGhost.renderOrder = 1001
   const head = new THREE.Mesh(headGeo, arrowMats.front)
   const headGhost = new THREE.Mesh(headGeo, arrowMats.back)
-  head.position.y = 17
-  headGhost.position.y = 17
+  head.position.y = Z_SHAFT + Z_HEAD / 2
+  headGhost.position.y = Z_SHAFT + Z_HEAD / 2
   head.renderOrder = 1002
   headGhost.renderOrder = 1001
   const arrowHit = new THREE.Mesh(arrowHitGeo, invisible)
-  arrowHit.position.y = 10
+  arrowHit.position.y = (Z_SHAFT + Z_HEAD) / 2
   arrowHit.userData = { gizmoAxis: "mz" satisfies TransformHandleAxis, handleId: "move-z" }
+  for (const mesh of [shaft, shaftGhost, head, headGhost, arrowHit]) mesh.frustumCulled = false
   arrow.add(shaftGhost, shaft, headGhost, head, arrowHit)
   root.add(arrow)
   hitTargets.push(arrowHit)
   disposables.push(arrowMats.front, arrowMats.back, shaftGeo, headGeo, arrowHitGeo)
 
-  const rotColors: Record<RotAxis, number> = {
-    rx: 0xf87171,
-    ry: 0x4ade80,
-    rz: 0x7dd3fc,
+  const arcX = createRotationArc(AXIS_COLORS.x, "rx", invisible)
+  const arcY = createRotationArc(AXIS_COLORS.y, "ry", invisible)
+  const arcZ = createRotationArc(AXIS_COLORS.z, "rz", invisible)
+  const arcs = [arcX, arcY, arcZ]
+  for (const arc of arcs) {
+    root.add(arc.group)
+    hitTargets.push(arc.tube, arc.hit, ...arc.heads)
+    disposables.push(arc.tubeGeo, arc.hitGeo, arc.coneGeo, arc.mats.front, arc.mats.back, arc.headMats.front, arc.headMats.back)
   }
-
-  const arcs = (["rx", "ry", "rz"] as const).map((axis) => {
-    const mats = depthPair(rotColors[axis])
-    const headMats = depthPair(rotColors[axis])
-    const tube = new THREE.Mesh(new THREE.BufferGeometry(), mats.front)
-    const tubeGhost = new THREE.Mesh(tube.geometry, mats.back)
-    tube.name = `rot-${axis}`
-    tube.renderOrder = 1002
-    tubeGhost.renderOrder = 1001
-    tube.frustumCulled = false
-    tubeGhost.frustumCulled = false
-    tube.userData = { gizmoAxis: axis, handleId: `rot-${axis}` }
-    const coneGeo = new THREE.ConeGeometry(1.05, 2.8, 10)
-    const headGroup = new THREE.Group()
-    const cone = new THREE.Mesh(coneGeo, headMats.front)
-    const coneGhost = new THREE.Mesh(coneGeo, headMats.back)
-    cone.renderOrder = 1002
-    coneGhost.renderOrder = 1001
-    cone.userData = { gizmoAxis: axis, handleId: `rot-${axis}` }
-    headGroup.add(coneGhost, cone)
-    const pickers = [0.2, 0.55, 0.9].map(() => {
-      const pick = new THREE.Mesh(pickGeo, invisible)
-      pick.userData = { gizmoAxis: axis, handleId: `rot-${axis}` }
-      return pick
-    })
-    root.add(tubeGhost, tube, headGroup, ...pickers)
-    hitTargets.push(tube, cone, ...pickers)
-    disposables.push(mats.front, mats.back, headMats.front, headMats.back, coneGeo)
-    return {
-      axis,
-      tube,
-      tubeGhost,
-      mats,
-      headMats,
-      headGroup,
-      pickers,
-      pts: Array.from({ length: ARC_STEPS + 1 }, () => new THREE.Vector3()),
-      cache: { radius: -1, origin: 0, tubeR: -1 },
-    }
-  })
 
   const box3 = new THREE.Box3()
   const corner = new THREE.Vector3()
@@ -267,7 +378,6 @@ export function createTransformBoxRig(): TransformBoxRig {
   const worldCenter = new THREE.Vector3()
   const size = new THREE.Vector3()
   const camLocal = new THREE.Vector3()
-  const tangent = new THREE.Vector3()
   const frameQuat = new THREE.Quaternion()
   const invQuat = new THREE.Quaternion()
   let boxKey = ""
@@ -286,53 +396,18 @@ export function createTransformBoxRig(): TransformBoxRig {
     }
     const arrowHot = hoveredId === "move-z"
     arrow.scale.setScalar(hs * (arrowHot ? 1.16 : 1))
-    const arrowColor = arrowHot ? 0x93c5fd : 0x3b82f6
+    const arrowColor = arrowHot ? 0x93c5fd : AXIS_COLORS.z
     arrowMats.front.color.set(arrowColor)
     arrowMats.back.color.set(arrowColor)
     for (const arc of arcs) {
       const hot = hoveredId === `rot-${arc.axis}`
-      const color = hot ? 0xffffff : rotColors[arc.axis]
+      const color = hot ? 0xffffff : AXIS_COLORS[arc.letter]
       arc.mats.front.color.set(color)
       arc.mats.back.color.set(color)
       arc.headMats.front.color.set(color)
       arc.headMats.back.color.set(color)
-      arc.headGroup.scale.setScalar(hs * (hot ? 1.22 : 1))
+      arc.group.scale.setScalar(hs * (hot ? 1.18 : 1))
     }
-  }
-
-  const writeArc = (arc: (typeof arcs)[number], radius: number, origin: number) => {
-    for (let i = 0; i <= ARC_STEPS; i++) {
-      const a = ARC_START + (ARC_SWEEP * i) / ARC_STEPS
-      const c = Math.cos(a) * radius
-      const s = Math.sin(a) * radius
-      const p = arc.pts[i]
-      if (arc.axis === "rz") p.set(c, s, origin)
-      else if (arc.axis === "rx") p.set(origin, c, s)
-      else p.set(s, origin, c)
-    }
-  }
-
-  const syncArc = (arc: (typeof arcs)[number], radius: number, origin: number, tubeR: number) => {
-    const cache = arc.cache
-    const dirty =
-      Math.abs(radius - cache.radius) > 0.2 ||
-      Math.abs(origin - cache.origin) > 0.2 ||
-      Math.abs(tubeR - cache.tubeR) > 0.04
-    if (!dirty) return
-    writeArc(arc, radius, origin)
-    const geom = new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3(arc.pts),
-      ARC_STEPS,
-      tubeR,
-      5,
-      false
-    )
-    arc.tube.geometry.dispose()
-    arc.tube.geometry = geom
-    arc.tubeGhost.geometry = geom
-    cache.radius = radius
-    cache.origin = origin
-    cache.tubeR = tubeR
   }
 
   return {
@@ -350,21 +425,13 @@ export function createTransformBoxRig(): TransformBoxRig {
       hoveredId = handleId
     },
     getHitTargets: () => hitTargets,
-    getScaleDrag: (sign) => {
-      root.updateMatrixWorld(true)
-      const anchor = new THREE.Vector3(-sign.x * hx, -sign.y * hy, -sign.z * hz)
-      const handle = new THREE.Vector3(sign.x * hx, sign.y * hy, sign.z * hz)
-      const span = Math.max(anchor.distanceTo(handle), 0.5)
-      root.localToWorld(anchor)
-      const direction = new THREE.Vector3(sign.x, sign.y, sign.z).normalize()
-      direction.transformDirection(root.matrixWorld)
-      return {
-        quaternion: root.quaternion.clone(),
-        anchor,
-        direction,
-        span,
-      }
-    },
+    getFrame: () => ({
+      center: root.position.clone(),
+      quaternion: root.quaternion.clone(),
+      hx,
+      hy,
+      hz,
+    }),
     update: (camera) => {
       if (!root.visible || targets.length === 0) return
 
@@ -418,43 +485,26 @@ export function createTransformBoxRig(): TransformBoxRig {
       root.worldToLocal(camLocal)
 
       const hs = manipulatorScale(camera, worldCenter)
-      const ext: Extents = { hx, hy, hz, hs }
+      const ext: Extents = { hx, hy, hz }
       for (const handle of scaleHandles) handle.place(ext, handle.group.position)
 
       const signZ = camLocal.z >= 0 ? 1 : -1
-      const lift = Math.max(1.6, hs * 2.2)
-      arrow.position.set(0, 0, signZ * (hz + lift + hs * 1.4))
+      const gap = Math.max(hs * 2.45, 2.4)
+      arrow.position.set(0, 0, signZ * (hz + gap))
       arrow.rotation.set(signZ > 0 ? Math.PI / 2 : -Math.PI / 2, 0, 0)
 
-      const arcRadius = (u: number, v: number) =>
-        Math.min(hs * 5.6, Math.max(Math.min(u, v) * 0.72, hs * 3.4))
-      const tubeR = hs * 0.46
-      const layouts: Record<RotAxis, { radius: number; origin: number }> = {
-        rz: { radius: arcRadius(hx, hy), origin: hz + lift },
-        rx: { radius: arcRadius(hy, hz), origin: hx + lift },
-        ry: { radius: arcRadius(hx, hz), origin: hy + lift },
-      }
-      for (const arc of arcs) {
-        const layout = layouts[arc.axis]
-        syncArc(arc, layout.radius, layout.origin, tubeR)
-        const end = arc.pts[ARC_STEPS]
-        const prev = arc.pts[ARC_STEPS - 1]
-        tangent.copy(end).sub(prev)
-        if (tangent.lengthSq() < 1e-8) tangent.set(0, 0, 1)
-        else tangent.normalize()
-        arc.headGroup.position.copy(end).addScaledVector(tangent, hs * 0.9)
-        arc.headGroup.quaternion.setFromUnitVectors(UP, tangent)
-        arc.pickers.forEach((pick, index) => {
-          const i = Math.round((index === 0 ? 0.2 : index === 1 ? 0.55 : 0.9) * ARC_STEPS)
-          pick.position.copy(arc.pts[i])
-          pick.scale.setScalar(hs * 2.6)
-        })
-      }
+      const offset = Math.max(hs * 2.15, 1.6)
+      arcZ.group.position.set(-hx - offset, 0, -hz)
+      arcZ.group.rotation.set(0, 0, Math.PI / 2)
+      arcY.group.position.set(0, -hy - offset * 0.6, hz + offset * 0.6)
+      arcY.group.rotation.set(Math.PI / 2, 0, 0)
+      arcX.group.position.set(hx + offset * 0.6, 0, hz + offset * 0.6)
+      arcX.group.quaternion.copy(arcY.group.quaternion)
+      arcX.group.rotateOnWorldAxis(RIG_Z, Math.PI / 2)
 
       paint(hs)
     },
     dispose: () => {
-      for (const arc of arcs) arc.tube.geometry.dispose()
       for (const item of disposables) item.dispose()
       root.removeFromParent()
     },

@@ -4,6 +4,9 @@ import { fmt } from "../utils/format"
 import { inp, lbl, neutralChipBtn } from "../styles/uiStyles"
 import { Icon } from "./Icon"
 
+const axisInk = (ax: "x" | "y" | "z") =>
+  ax === "x" ? "#EF4444" : ax === "y" ? "#22C55E" : "#3B82F6"
+
 export function InspectorPanel({
   topOffset,
   glass,
@@ -157,12 +160,7 @@ export function InspectorPanel({
                     style={{
                       fontSize: 12,
                       fontWeight: 800,
-                      color:
-                        ax === "x"
-                          ? "#F87171"
-                          : ax === "y"
-                            ? "#4ADE80"
-                            : "#60A5FA",
+                      color: axisInk(ax),
                       textTransform: "uppercase",
                     }}
                   >
@@ -260,7 +258,7 @@ export function InspectorPanel({
               {(["x", "y", "z"] as const).map((ax) => (
                 <label key={ax} style={lbl}>
                   <span>
-                    {ax.toUpperCase()} ({dimUnit})
+                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> ({dimUnit})
                   </span>
                   <input
                     className="adivi-num-input"
@@ -376,7 +374,9 @@ export function InspectorPanel({
             >
               {(["x", "y", "z"] as const).map((ax) => (
                 <label key={ax} style={lbl}>
-                  <span>{ax.toUpperCase()} (cm)</span>
+                  <span>
+                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> (cm)
+                  </span>
                   <input
                     className="adivi-num-input"
                     type="number"
@@ -449,7 +449,9 @@ export function InspectorPanel({
             >
               {(["x", "y", "z"] as const).map((ax) => (
                 <label key={ax} style={lbl}>
-                  <span>{ax.toUpperCase()} (°)</span>
+                  <span>
+                    <span style={{ color: axisInk(ax) }}>{ax.toUpperCase()}</span> (°)
+                  </span>
                   <input
                     className="adivi-num-input"
                     type="number"
