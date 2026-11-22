@@ -16,6 +16,7 @@ import {
   ToolMode,
 } from "./types/editor"
 import { downloadBlob, fmt, uid } from "./utils/format"
+import { snapCm, snapRotationDeg } from "./utils/transformSnap"
 import {
   deserializeProjectPayload,
   loadAutosaveFromIdb,
@@ -559,21 +560,32 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
   React.useEffect(() => {
     if (!selectedObj) return
     const { baseDim, scale, pos, rot } = selectedObj
+    const sizeX = snapCm(baseDim.x * scale.sx)
+    const sizeY = snapCm(baseDim.y * scale.sy)
+    const sizeZ = snapCm(baseDim.z * scale.sz)
     setDimInputs(
       dimUnit === "%"
         ? {
-            x: fmt(scale.sx * 100),
-            y: fmt(scale.sy * 100),
-            z: fmt(scale.sz * 100),
+            x: fmt((sizeX / baseDim.x) * 100),
+            y: fmt((sizeY / baseDim.y) * 100),
+            z: fmt((sizeZ / baseDim.z) * 100),
           }
         : {
-            x: fmt(baseDim.x * scale.sx),
-            y: fmt(baseDim.y * scale.sy),
-            z: fmt(baseDim.z * scale.sz),
+            x: fmt(sizeX),
+            y: fmt(sizeY),
+            z: fmt(sizeZ),
           }
     )
-    setPosInputs({ x: fmt(pos.x), y: fmt(pos.y), z: fmt(pos.z) })
-    setRotInputs({ x: fmt(rot.x), y: fmt(rot.y), z: fmt(rot.z) })
+    setPosInputs({
+      x: fmt(snapCm(pos.x)),
+      y: fmt(snapCm(pos.y)),
+      z: fmt(snapCm(pos.z)),
+    })
+    setRotInputs({
+      x: fmt(snapRotationDeg(rot.x)),
+      y: fmt(snapRotationDeg(rot.y)),
+      z: fmt(snapRotationDeg(rot.z)),
+    })
   }, [selectedObj, dimUnit])
 
   React.useEffect(() => {

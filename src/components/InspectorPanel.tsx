@@ -1,11 +1,44 @@
 import * as React from "react"
 import { DimUnit, SceneObject } from "../types/editor"
 import { fmt } from "../utils/format"
+import {
+  SNAP_CM_STEP,
+  SNAP_ROTATION_DEG_STEP,
+  snapCm,
+  snapRotationDeg,
+} from "../utils/transformSnap"
 import { inp, lbl, neutralChipBtn } from "../styles/uiStyles"
 import { Icon } from "./Icon"
 
 const axisInk = (ax: "x" | "y" | "z") =>
   ax === "x" ? "#EB9090" : ax === "y" ? "#78D896" : "#84B4F8"
+
+const RESET_ORANGE = "#F6C09A"
+
+const sectionHead: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  height: 16,
+  minHeight: 16,
+}
+
+const sectionTitle: React.CSSProperties = {
+  fontSize: 12.5,
+  fontWeight: 700,
+  color: "#94A3B8",
+  lineHeight: "16px",
+}
+
+/** Same height as the section title so these controls never grow the panel. */
+const miniChip = (active = false): React.CSSProperties => ({
+  ...neutralChipBtn(active),
+  height: 16,
+  minWidth: 16,
+  padding: 0,
+  borderRadius: 4,
+  flexShrink: 0,
+})
 
 export function InspectorPanel({
   topOffset,
@@ -76,6 +109,71 @@ export function InspectorPanel({
   setSimplifyPercent: React.Dispatch<React.SetStateAction<number>>
   handleSimplifySelected: () => void
 }) {
+  const commitScaleAxis = (
+    ax: "x" | "y" | "z",
+    raw: string,
+    fine: boolean
+  ) => {
+    const num = parseFloat(raw.replace(",", "."))
+    if (!Number.isFinite(num) || num <= 0) return
+    const k = `s${ax}` as "sx" | "sy" | "sz"
+    const sizeCm =
+      dimUnit === "%"
+        ? (num / 100) * selectedObj.baseDim[ax]
+        : num
+    const snappedCm = fine ? sizeCm : snapCm(sizeCm)
+    const s = snappedCm / selectedObj.baseDim[ax]
+    if (lockProp) {
+      setDimInputs(
+        dimUnit === "%"
+          ? { x: fmt(s * 100), y: fmt(s * 100), z: fmt(s * 100) }
+          : {
+              x: fmt(selectedObj.baseDim.x * s),
+              y: fmt(selectedObj.baseDim.y * s),
+              z: fmt(selectedObj.baseDim.z * s),
+            }
+      )
+      patchObject(selectedObj.id, (o) => ({
+        ...o,
+        scale: { sx: s, sy: s, sz: s },
+      }))
+    } else {
+      setDimInputs((p) => ({
+        ...p,
+        [ax]:
+          dimUnit === "%"
+            ? fmt(s * 100)
+            : fmt(selectedObj.baseDim[ax] * s),
+      }))
+      patchObject(selectedObj.id, (o) => ({
+        ...o,
+        scale: { ...o.scale, [k]: s },
+      }))
+    }
+  }
+
+  const commitPosAxis = (ax: "x" | "y" | "z", raw: string, fine: boolean) => {
+    const num = parseFloat(raw.replace(",", "."))
+    if (!Number.isFinite(num)) return
+    const v = fine ? num : snapCm(num)
+    setPosInputs((p) => ({ ...p, [ax]: fmt(v) }))
+    patchObject(selectedObj.id, (o) => ({
+      ...o,
+      pos: { ...o.pos, [ax]: v },
+    }))
+  }
+
+  const commitRotAxis = (ax: "x" | "y" | "z", raw: string, fine: boolean) => {
+    const num = parseFloat(raw.replace(",", "."))
+    if (!Number.isFinite(num)) return
+    const v = fine ? num : snapRotationDeg(num)
+    setRotInputs((p) => ({ ...p, [ax]: fmt(v) }))
+    patchObject(selectedObj.id, (o) => ({
+      ...o,
+      rot: { ...o.rot, [ax]: v },
+    }))
+  }
+
   return (
     <div
       style={{
@@ -199,17 +297,9 @@ export function InspectorPanel({
 
           {/* SCALE SECTION */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#94A3B8" }}>
-                Scale
-              </span>
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <div style={sectionHead}>
+              <span style={sectionTitle}>Scale</span>
+              <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
                 {isScaleModified && (
                   <button
                     type="button"
@@ -220,9 +310,9 @@ export function InspectorPanel({
                         scale: { sx: 1, sy: 1, sz: 1 },
                       }))
                     }
-                    style={neutralChipBtn(false)}
+                    style={{ ...miniChip(false), color: RESET_ORANGE }}
                   >
-                    <Icon name="reset" size={13} />
+                    <Icon name="reset" size={10} />
                   </button>
                 )}
                 <button
@@ -230,9 +320,9 @@ export function InspectorPanel({
                   title="Switch cm / %"
                   onClick={() => setDimUnit((u) => (u === "cm" ? "%" : "cm"))}
                   style={{
-                    ...neutralChipBtn(false),
-                    padding: "0 8px",
-                    fontSize: 11.5,
+                    ...miniChip(false),
+                    width: 22,
+                    fontSize: 9,
                     fontWeight: 700,
                   }}
                 >
@@ -242,9 +332,9 @@ export function InspectorPanel({
                   type="button"
                   title="Lock Proportions"
                   onClick={() => setLockProp((v) => !v)}
-                  style={neutralChipBtn(lockProp)}
+                  style={miniChip(lockProp)}
                 >
-                  <Icon name={lockProp ? "lock" : "unlock"} size={13} />
+                  <Icon name={lockProp ? "lock" : "unlock"} size={10} />
                 </button>
               </div>
             </div>
@@ -263,7 +353,7 @@ export function InspectorPanel({
                   <input
                     className="adivi-num-input"
                     type="number"
-                    step={dimUnit === "%" ? "1" : "0.1"}
+                    step={dimUnit === "%" ? "0.5" : SNAP_CM_STEP}
                     value={dimInputs[ax]}
                     onChange={(e) => {
                       const raw = e.target.value
@@ -322,6 +412,18 @@ export function InspectorPanel({
                         )
                       }
                     }}
+                    onBlur={(e) => commitScaleAxis(ax, e.currentTarget.value, false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        commitScaleAxis(
+                          ax,
+                          e.currentTarget.value,
+                          e.altKey || e.ctrlKey
+                        )
+                        e.currentTarget.blur()
+                      }
+                    }}
                     style={inp}
                   />
                 </label>
@@ -339,16 +441,8 @@ export function InspectorPanel({
               borderTop: "1px solid rgba(255,255,255,0.12)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#94A3B8" }}>
-                Position
-              </span>
+            <div style={sectionHead}>
+              <span style={sectionTitle}>Position</span>
               {isPosModified && (
                 <button
                   type="button"
@@ -359,9 +453,9 @@ export function InspectorPanel({
                       pos: { x: 0, y: 0, z: 0 },
                     }))
                   }
-                  style={neutralChipBtn(false)}
+                  style={{ ...miniChip(false), color: RESET_ORANGE }}
                 >
-                  <Icon name="reset" size={13} />
+                  <Icon name="reset" size={10} />
                 </button>
               )}
             </div>
@@ -380,7 +474,7 @@ export function InspectorPanel({
                   <input
                     className="adivi-num-input"
                     type="number"
-                    step="0.1"
+                    step={SNAP_CM_STEP}
                     value={posInputs[ax]}
                     onChange={(e) => {
                       const raw = e.target.value
@@ -395,6 +489,18 @@ export function InspectorPanel({
                           }),
                           false
                         )
+                      }
+                    }}
+                    onBlur={(e) => commitPosAxis(ax, e.currentTarget.value, false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        commitPosAxis(
+                          ax,
+                          e.currentTarget.value,
+                          e.altKey || e.ctrlKey
+                        )
+                        e.currentTarget.blur()
                       }
                     }}
                     style={inp}
@@ -414,16 +520,8 @@ export function InspectorPanel({
               borderTop: "1px solid rgba(255,255,255,0.12)",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#94A3B8" }}>
-                Rotation
-              </span>
+            <div style={sectionHead}>
+              <span style={sectionTitle}>Rotation</span>
               {isRotModified && (
                 <button
                   type="button"
@@ -434,9 +532,9 @@ export function InspectorPanel({
                       rot: { x: 0, y: 0, z: 0 },
                     }))
                   }
-                  style={neutralChipBtn(false)}
+                  style={{ ...miniChip(false), color: RESET_ORANGE }}
                 >
-                  <Icon name="reset" size={13} />
+                  <Icon name="reset" size={10} />
                 </button>
               )}
             </div>
@@ -455,7 +553,7 @@ export function InspectorPanel({
                   <input
                     className="adivi-num-input"
                     type="number"
-                    step="15"
+                    step={SNAP_ROTATION_DEG_STEP}
                     value={rotInputs[ax]}
                     onChange={(e) => {
                       const raw = e.target.value
@@ -470,6 +568,18 @@ export function InspectorPanel({
                           }),
                           false
                         )
+                      }
+                    }}
+                    onBlur={(e) => commitRotAxis(ax, e.currentTarget.value, false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        commitRotAxis(
+                          ax,
+                          e.currentTarget.value,
+                          e.altKey || e.ctrlKey
+                        )
+                        e.currentTarget.blur()
                       }
                     }}
                     style={inp}

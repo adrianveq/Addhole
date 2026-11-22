@@ -3,8 +3,9 @@ import * as THREE from "three"
 /**
  * Oriented bounding-box manipulator for ToolMode "transform".
  * The rig follows the primary mesh quaternion, so the box and handles
- * rotate with the model. Scale signs are in {-1, 0, 1}: corners are XY
- * only (z = 0). ViewportCanvas freezes this frame on pointerdown.
+ * rotate with the model. Scale signs are in {-1, 0, 1}. Top corners scale
+ * X, Y, and Z; Shift pins Z to the bottom edge. ViewportCanvas freezes this
+ * frame on pointerdown.
  */
 export type TransformHandleAxis =
   | "sxy"
@@ -117,22 +118,17 @@ const uniformKFromVector = (vx: number, vy: number, vz: number, localDelta: THRE
   return Math.max(MIN_SCALE, (len + localDelta.dot(v.clone().normalize())) / len)
 }
 
-/** Diagonal used by uniform corner scale. Same vector the drag path samples. */
+/** Handle minus anchor. Same diagonal `rigScaleFactors` samples for uniform corners. */
 function cornerUniformVector(
   sign: { x: number; y: number; z: number },
   half: { x: number; y: number; z: number },
   symmetric: boolean
 ) {
-  if (symmetric) {
-    return new THREE.Vector3(sign.x * half.x, sign.y * half.y, sign.z * half.z)
-  }
-  const ax = -sign.x * half.x
-  const ay = -sign.y * half.y
-  const az = (sign.z > 0 ? 1 : -1) * half.z
+  const anchor = oppositeAnchor("corner", sign, half, true, symmetric)
   return new THREE.Vector3(
-    sign.x * half.x - ax,
-    sign.y * half.y - ay,
-    sign.z * half.z - az
+    sign.x * half.x - anchor.x,
+    sign.y * half.y - anchor.y,
+    sign.z * half.z - anchor.z
   )
 }
 
@@ -195,28 +191,73 @@ export function rigScaleFactors(
   } else if (kind === "corner") {
     fx = spanFactor(sign.x, half.x, localDelta.x, symmetric)
     fy = spanFactor(sign.y, half.y, localDelta.y, symmetric)
-    fz = 1
+    fz = sign.z > 0 ? spanFactor(sign.z, half.z, localDelta.z, symmetric) : 1
   } else {
     fx = sign.x ? rawX : 1
     fy = sign.y ? rawY : 1
     fz = sign.z ? rawZ : 1
   }
 
-  const anchor = symmetric
-    ? new THREE.Vector3(0, 0, 0)
-    : uniform && kind === "corner"
-      ? new THREE.Vector3(
-          -sign.x * half.x,
-          -sign.y * half.y,
-          (sign.z > 0 ? 1 : -1) * half.z
-        )
-      : new THREE.Vector3(
-          sign.x ? -sign.x * half.x : 0,
-          sign.y ? -sign.y * half.y : 0,
-          kind === "corner" ? 0 : sign.z ? -sign.z * half.z : 0
-        )
+  return { fx, fy, fz, anchor: oppositeAnchor(kind, sign, half, uniform, symmetric) }
+}
 
-  return { fx, fy, fz, anchor }
+/**
+ * Opposite X/Y corner, or the opposite face.
+ * Uniform scale and top corners pin Z to the bottom edge (local -Z).
+ * Symmetric keeps the center.
+ */
+function oppositeAnchor(
+  kind: ScaleKind,
+  sign: { x: number; y: number; z: number },
+  half: { x: number; y: number; z: number },
+  uniform: boolean,
+  symmetric: boolean
+) {
+  if (symmetric) return new THREE.Vector3()
+  const z =
+    uniform || (kind === "corner" && sign.z > 0)
+      ? -half.z
+      : kind !== "corner" && sign.z
+        ? -sign.z * half.z
+        : 0
+  if (kind === "corner") {
+    return new THREE.Vector3(-sign.x * half.x, -sign.y * half.y, z)
+  }
+  return new THREE.Vector3(sign.x ? -sign.x * half.x : 0, sign.y ? -sign.y * half.y : 0, z)
+}
+
+/**
+ * Dimension edit from the unrounded snapshot length.
+ * `factor = newVal / prevVal` is applied directly. Shift scales the paired
+ * axes by that same factor; Z stays on the bottom edge.
+ */
+export function dimensionEditScale(
+  kind: ScaleKind,
+  sign: { x: number; y: number; z: number },
+  half: { x: number; y: number; z: number },
+  axis: "x" | "y" | "z",
+  prevVal: number,
+  newVal: number,
+  isProportional: boolean,
+  symmetric: boolean
+) {
+  if (!(prevVal > 0) || !(newVal > 0)) return null
+  const factor = Math.max(MIN_SCALE, newVal / prevVal)
+  let fx = 1
+  let fy = 1
+  let fz = 1
+  if (isProportional) fx = fy = fz = factor
+  else if (axis === "x") fx = factor
+  else if (axis === "y") fy = factor
+  else fz = factor
+  if (!isProportional && kind === "corner") fz = 1
+  return {
+    fx,
+    fy,
+    fz,
+    factor,
+    anchor: oppositeAnchor(kind, sign, half, isProportional, symmetric),
+  }
 }
 
 export interface CornerEdgeMeasure {

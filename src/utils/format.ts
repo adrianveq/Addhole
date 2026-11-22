@@ -1,4 +1,5 @@
-export const fmt = (n: number): string => String(Number(n.toFixed(2)))
+export const fmt = (n: number): string =>
+  Number.isFinite(n) ? n.toFixed(2) : "0.00"
 
 export const uid = (tag = "obj"): string =>
   `${tag}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`

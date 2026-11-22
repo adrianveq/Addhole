@@ -18,13 +18,20 @@ import {
 import { buildModeGizmo } from "../three/gizmo"
 import {
   createTransformBoxRig,
-  deltaForAxisFactor,
+  dimensionEditScale,
   rigScaleFactors,
   TRANSFORM_AXIS_CSS,
   type TransformBoxRig,
 } from "../three/transformBoxRig"
 import { parse3mfToGeometry, parseStepToGeometry } from "../utils/fileLoaders"
 import { fmt } from "../utils/format"
+import {
+  gizmoSnapEnabled,
+  snapCm,
+  snapDragPositionCm,
+  snapDragSizeCm,
+  snapRotationDeltaDeg,
+} from "../utils/transformSnap"
 
 type DimAxis = "x" | "y" | "z"
 
@@ -142,6 +149,13 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     hoverId: null as string | null,
     pinnedId: null as string | null,
     editing: null as DimAxis | null,
+    /** Shift was held while pinning this corner. */
+    proportionalPin: false,
+    /** Shift was held while typing or confirming the current value. */
+    proportionalEdit: false,
+    /** Shift was held (at least once) during a corner scale drag. */
+    proportionalDrag: false,
+    snapshot: null as null | { id: string; length: Partial<Record<DimAxis, number>> },
   })
   const calloutGeomRef = React.useRef<DimCalloutView | null>(null)
   const [cornerCallout, setCornerCallout] = React.useState<DimCalloutView | null>(null)
@@ -293,6 +307,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         hy: number
         hz: number
         pullLocal?: THREE.Vector3
+        /** Full-span edge lengths in cm at pointer-down (corner uniform / callout). */
+        baseLengths?: Partial<Record<DimAxis, number>>
       }
       moveAxis: THREE.Vector3 | null
       rotBasis: null | { axis: THREE.Vector3; xDir: THREE.Vector3; yDir: THREE.Vector3 }
@@ -497,17 +513,31 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           const ud = axisHit.object.userData
           const axis = ud.gizmoAxis as string
           const handleId = ud.handleId as string | undefined
-          cornerUiRef.current.pinnedId =
-            handleId && showsDimensionCallout(ud) ? handleId : null
+          const nextPin = handleId && showsDimensionCallout(ud) ? handleId : null
+          if (nextPin) {
+            if (nextPin !== cornerUiRef.current.pinnedId) {
+              cornerUiRef.current.proportionalPin = e.shiftKey
+              cornerUiRef.current.proportionalEdit = false
+              cornerUiRef.current.proportionalDrag = false
+              cornerUiRef.current.snapshot = null
+            } else if (e.shiftKey) {
+              cornerUiRef.current.proportionalPin = true
+            }
+          } else {
+            cornerUiRef.current.proportionalPin = false
+            cornerUiRef.current.proportionalEdit = false
+            cornerUiRef.current.proportionalDrag = false
+            cornerUiRef.current.snapshot = null
+          }
+          cornerUiRef.current.pinnedId = nextPin
           if (ud.signX !== undefined) {
             const kind = ud.handleKind === "face" ? "face" : "corner"
             const sign = { x: ud.signX as number, y: ud.signY as number, z: ud.signZ as number }
             const frame = transformRig.getFrame()
-            const dir = new THREE.Vector3(
-              sign.x,
-              sign.y,
-              kind === "corner" ? 0 : sign.z
-            )
+            const dir =
+              kind === "corner" && sign.z > 0
+                ? new THREE.Vector3(sign.x * frame.hx, sign.y * frame.hy, frame.hz)
+                : new THREE.Vector3(sign.x, sign.y, kind === "corner" ? 0 : sign.z)
             if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1)
             else dir.normalize()
             dir.transformDirection(transformRig.root.matrixWorld)
@@ -515,6 +545,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
             const planeN = toCam.addScaledVector(dir, -toCam.dot(dir))
             if (planeN.lengthSq() < 1e-8) planeN.set(0, 0, 1)
             else planeN.normalize()
+            const cmSpan = 0.2
             if (
               startAxisDrag(axis, frame.center, primaryId, {
                 planeNormal: planeN,
@@ -527,6 +558,14 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                   hx: frame.hx,
                   hy: frame.hy,
                   hz: frame.hz,
+                  baseLengths:
+                    kind === "corner"
+                      ? {
+                          x: frame.hx * cmSpan,
+                          y: frame.hy * cmSpan,
+                          z: frame.hz * cmSpan,
+                        }
+                      : undefined,
                 },
               })
             ) {
@@ -860,6 +899,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       } = activeDrag
       const moveDamping = 0.72
       const doCommit = commitRef.current
+      const snap = gizmoSnapEnabled(e)
 
       if (activeDrag.scaleDrag) {
         const { kind, sign, center, quat, hx, hy, hz, pullLocal } = activeDrag.scaleDrag
@@ -895,6 +935,30 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               )
         const { fx, fy, fz } = scaled
         const anchorWorld = scaled.anchor.clone().applyQuaternion(quat).add(center)
+        if (kind === "corner" && activeDrag.scaleDrag.baseLengths) {
+          const base = activeDrag.scaleDrag.baseLengths
+          if (e.shiftKey) {
+            cornerUiRef.current.proportionalDrag = true
+            const k = fx
+            setDimDraft({
+              x: fmt(base.x! * k),
+              y: fmt(base.y! * k),
+              z: fmt(base.z! * k),
+            })
+          } else {
+            setDimDraft((draft) => {
+              const next = { ...draft }
+              let changed = false
+              for (const key of ["x", "y", "z"] as const) {
+                if (next[key] !== undefined) {
+                  delete next[key]
+                  changed = true
+                }
+              }
+              return changed ? next : draft
+            })
+          }
+        }
         doCommit(
           (prev) =>
             prev.map((o) => {
@@ -906,7 +970,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                 fy,
                 fz,
                 anchorWorld,
-                quat
+                quat,
+                snap
               )
             }),
           false
@@ -927,9 +992,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               return {
                 ...o,
                 pos: {
-                  x: Number((st.pos.x + delta.x).toFixed(2)),
-                  y: Number((st.pos.y + delta.y).toFixed(2)),
-                  z: Number((st.pos.z + delta.z).toFixed(2)),
+                  x: snapDragPositionCm(st.pos.x, delta.x, snap),
+                  y: snapDragPositionCm(st.pos.y, delta.y, snap),
+                  z: snapDragPositionCm(st.pos.z, delta.z, snap),
                 },
               }
             }),
@@ -952,8 +1017,16 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                     ...o,
                     pos: {
                       ...o.pos,
-                      x: Number((startTransforms[o.id].pos.x + dx).toFixed(2)),
-                      y: Number((startTransforms[o.id].pos.y + dy).toFixed(2)),
+                      x: snapDragPositionCm(
+                        startTransforms[o.id].pos.x,
+                        dx,
+                        snap
+                      ),
+                      y: snapDragPositionCm(
+                        startTransforms[o.id].pos.y,
+                        dy,
+                        snap
+                      ),
                     },
                   }
                 : o
@@ -971,9 +1044,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               ? Math.atan2(hitPt.x - pivotWorld.x, hitPt.z - pivotWorld.z)
               : Math.atan2(hitPt.y - pivotWorld.y, hitPt.x - pivotWorld.x)
         const rawDeltaDeg = THREE.MathUtils.radToDeg(curAngle - startAngle)
-        const deltaDeg = e.altKey
-          ? Math.round(rawDeltaDeg)
-          : Math.round(rawDeltaDeg / 15) * 15
+        const deltaDeg = snapRotationDeltaDeg(rawDeltaDeg, snap)
         const deltaRad = THREE.MathUtils.degToRad(deltaDeg)
         const rotAxisVec = basis
           ? basis.axis
@@ -995,12 +1066,15 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               ).applyQuaternion(deltaQuat)
               const nextQuat = deltaQuat.clone().multiply(st.quat).normalize()
               const euler = new THREE.Euler().setFromQuaternion(nextQuat, "ZYX")
+              const px = (pivotWorld.x + offsetMm.x) / 10
+              const py = (pivotWorld.y + offsetMm.y) / 10
+              const pz = (pivotWorld.z + offsetMm.z) / 10
               return {
                 ...o,
                 pos: {
-                  x: Number(((pivotWorld.x + offsetMm.x) / 10).toFixed(2)),
-                  y: Number(((pivotWorld.y + offsetMm.y) / 10).toFixed(2)),
-                  z: Number(((pivotWorld.z + offsetMm.z) / 10).toFixed(2)),
+                  x: snap ? snapCm(px) : px,
+                  y: snap ? snapCm(py) : py,
+                  z: snap ? snapCm(pz) : pz,
                 },
                 rot: {
                   x: Number(THREE.MathUtils.radToDeg(euler.x).toFixed(2)),
@@ -1078,6 +1152,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           if (historyRef.current.past.length > 40) historyRef.current.past.shift()
           historyRef.current.future = []
           syncHistFlags()
+        }
+        if (cornerUiRef.current.proportionalDrag) {
+          cornerUiRef.current.proportionalPin = true
+          cornerUiRef.current.proportionalDrag = false
         }
         activeDrag = null
       }
@@ -1720,10 +1798,35 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     cornerUiRef.current.pinnedId = null
     cornerUiRef.current.hoverId = null
     cornerUiRef.current.editing = null
+    cornerUiRef.current.proportionalPin = false
+    cornerUiRef.current.proportionalEdit = false
+    cornerUiRef.current.proportionalDrag = false
+    cornerUiRef.current.snapshot = null
     calloutGeomRef.current = null
     setCornerCallout(null)
     setDimDraft((draft) => (Object.keys(draft).length ? {} : draft))
   }, [selectionKey, toolMode])
+
+  React.useEffect(() => {
+    if (!cornerCallout) return
+    setDimDraft((draft) => {
+      const editing = cornerUiRef.current.editing
+      let changed = false
+      const next = { ...draft }
+      for (const edge of cornerCallout.edges) {
+        if (edge.axis === editing) continue
+        const shown = next[edge.axis]
+        if (shown === undefined) continue
+        const n = parseFloat(shown)
+        if (!Number.isFinite(n)) continue
+        if (Math.abs(edge.length - n) <= Math.max(0.02, Math.abs(n) * 0.002)) {
+          delete next[edge.axis]
+          changed = true
+        }
+      }
+      return changed ? next : draft
+    })
+  }, [cornerCallout])
 
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1733,6 +1836,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       if (!cornerUiRef.current.pinnedId) return
       cornerUiRef.current.pinnedId = null
       cornerUiRef.current.editing = null
+      cornerUiRef.current.proportionalPin = false
+      cornerUiRef.current.proportionalEdit = false
+      cornerUiRef.current.proportionalDrag = false
+      cornerUiRef.current.snapshot = null
       if (!cornerUiRef.current.hoverId) {
         calloutGeomRef.current = null
         setCornerCallout(null)
@@ -1769,33 +1876,53 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     if (!sign || !edge || edge.length < 1e-6) return
     const nextLength = parseFloat(raw.replace(",", "."))
     if (!Number.isFinite(nextLength) || nextLength <= 0) return
-    if (Math.abs(nextLength - Number(fmt(edge.length))) < 1e-4) return
+    const ui = cornerUiRef.current
+    const isProportional =
+      uniform || ui.proportionalPin || ui.proportionalEdit || ui.proportionalDrag
+    const lengths: Partial<Record<DimAxis, number>> = { ...(ui.snapshot?.id === handleId ? ui.snapshot.length : {}) }
+    if (corner) {
+      for (const item of corner.edges) lengths[item.axis] = lengths[item.axis] ?? item.length
+    } else if (height) {
+      lengths.z = lengths.z ?? height.edge.length
+    } else if (planar) {
+      lengths[planar.edge.axis] = lengths[planar.edge.axis] ?? planar.edge.length
+    }
+    const prevVal = lengths[axis] ?? edge.length
+    if (!(prevVal > 0)) return
+    if (Math.abs(nextLength - Number(fmt(prevVal))) < 1e-4) return
     const frame = rig.getFrame()
     const half = { x: frame.hx, y: frame.hy, z: frame.hz }
     const kind = height || planar ? "face" : "corner"
-    const localDelta = deltaForAxisFactor(
+    const scaled = dimensionEditScale(
       kind,
       sign,
       half,
       axis,
-      nextLength / edge.length,
-      uniform,
+      prevVal,
+      nextLength,
+      isProportional,
       symmetric
     )
-    const { fx, fy, fz, anchor } = rigScaleFactors(
-      kind,
-      sign,
-      half,
-      localDelta,
-      uniform,
-      symmetric
-    )
+    if (!scaled) return
+    const { fx, fy, fz, anchor, factor } = scaled
     if (
       Math.abs(fx - 1) < 1e-6 &&
       Math.abs(fy - 1) < 1e-6 &&
       Math.abs(fz - 1) < 1e-6
     ) {
       return
+    }
+    if (isProportional) {
+      setDimDraft((draft) => {
+        const next = { ...draft }
+        delete next[axis]
+        for (const key of ["x", "y", "z"] as const) {
+          if (key === axis) continue
+          const prev = lengths[key]
+          if (prev && prev > 0) next[key] = fmt(prev * factor)
+        }
+        return next
+      })
     }
     const quat = frame.quaternion
     const anchorWorld = anchor.clone().applyQuaternion(quat).add(frame.center)
@@ -1804,7 +1931,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       (prev) =>
         prev.map((obj) =>
           ids.has(obj.id)
-            ? scaleObjectAboutAnchor(obj, fx, fy, fz, anchorWorld, quat)
+            ? scaleObjectAboutAnchor(obj, fx, fy, fz, anchorWorld, quat, false)
             : obj
         ),
       !api.isEditingGroup
@@ -1822,10 +1949,20 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           onFocusAxis={(axis, handleId) => {
             cornerUiRef.current.editing = axis
             cornerUiRef.current.pinnedId = handleId
+            cornerUiRef.current.proportionalEdit = false
+            if (cornerCallout && cornerCallout.id === handleId) {
+              const length: Partial<Record<DimAxis, number>> = {}
+              for (const edge of cornerCallout.edges) length[edge.axis] = edge.length
+              cornerUiRef.current.snapshot = { id: handleId, length }
+            }
           }}
           onCommit={applyCornerDimension}
+          onShiftProportional={() => {
+            cornerUiRef.current.proportionalEdit = true
+          }}
           onCancel={(axis) => {
             cornerUiRef.current.editing = null
+            cornerUiRef.current.proportionalEdit = false
             setDimDraft((draft) => {
               if (draft[axis] === undefined) return draft
               const next = { ...draft }
@@ -1845,28 +1982,41 @@ function scaleObjectAboutAnchor(
   fy: number,
   fz: number,
   anchorWorld: THREE.Vector3,
-  quat: THREE.Quaternion
+  quat: THREE.Quaternion,
+  snap: boolean
 ): SceneObject {
+  const bd = obj.baseDim
+  let sfx = fx
+  let sfy = fy
+  let sfz = fz
+  if (snap && bd) {
+    const sx0 = bd.x * obj.scale.sx
+    const sy0 = bd.y * obj.scale.sy
+    const sz0 = bd.z * obj.scale.sz
+    if (sx0 > 1e-6) sfx = snapDragSizeCm(sx0, fx, true) / sx0
+    if (sy0 > 1e-6) sfy = snapDragSizeCm(sy0, fy, true) / sy0
+    if (sz0 > 1e-6) sfz = snapDragSizeCm(sz0, fz, true) / sz0
+  }
   const rel = new THREE.Vector3(obj.pos.x * 10, obj.pos.y * 10, obj.pos.z * 10).sub(
     anchorWorld
   )
   rel.applyQuaternion(quat.clone().invert())
-  rel.x *= fx
-  rel.y *= fy
-  rel.z *= fz
+  rel.x *= sfx
+  rel.y *= sfy
+  rel.z *= sfz
   rel.applyQuaternion(quat)
   const next = anchorWorld.clone().add(rel)
   return {
     ...obj,
     pos: {
-      x: Number((next.x / 10).toFixed(2)),
-      y: Number((next.y / 10).toFixed(2)),
-      z: Number((next.z / 10).toFixed(2)),
+      x: next.x / 10,
+      y: next.y / 10,
+      z: next.z / 10,
     },
     scale: {
-      sx: Number((obj.scale.sx * fx).toFixed(3)),
-      sy: Number((obj.scale.sy * fy).toFixed(3)),
-      sz: Number((obj.scale.sz * fz).toFixed(3)),
+      sx: obj.scale.sx * sfx,
+      sy: obj.scale.sy * sfy,
+      sz: obj.scale.sz * sfz,
     },
   }
 }
@@ -1925,6 +2075,7 @@ function CornerDimensionCallout({
   drafts,
   onDraft,
   onFocusAxis,
+  onShiftProportional,
   onCommit,
   onCancel,
 }: {
@@ -1932,6 +2083,7 @@ function CornerDimensionCallout({
   drafts: Partial<Record<DimAxis, string>>
   onDraft: (axis: DimAxis, value: string) => void
   onFocusAxis: (axis: DimAxis, handleId: string) => void
+  onShiftProportional: () => void
   onCommit: (
     handleId: string,
     axis: DimAxis,
@@ -2034,6 +2186,7 @@ function CornerDimensionCallout({
             onKeyUp={blockOverlayEvent}
             onKeyDown={(e) => {
               e.stopPropagation()
+              if (e.shiftKey && e.key !== "Escape") onShiftProportional()
               if (e.key === "Enter") {
                 e.preventDefault()
                 onCommit(
