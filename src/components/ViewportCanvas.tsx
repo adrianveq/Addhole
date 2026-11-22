@@ -16,8 +16,53 @@ import {
   createBuildPlate,
 } from "../three/sceneHelpers"
 import { buildModeGizmo } from "../three/gizmo"
-import { createTransformBoxRig, rigScaleFactors } from "../three/transformBoxRig"
+import {
+  createTransformBoxRig,
+  deltaForAxisFactor,
+  rigScaleFactors,
+  TRANSFORM_AXIS_CSS,
+  type TransformBoxRig,
+} from "../three/transformBoxRig"
 import { parse3mfToGeometry, parseStepToGeometry } from "../utils/fileLoaders"
+import { fmt } from "../utils/format"
+
+type DimAxis = "x" | "y" | "z"
+
+const showsDimensionCallout = (ud: {
+  handleKind?: string
+  gizmoAxis?: string
+} | null | undefined) =>
+  ud?.handleKind === "corner" ||
+  (ud?.handleKind === "face" &&
+    (ud.gizmoAxis === "sx" || ud.gizmoAxis === "sy" || ud.gizmoAxis === "sz"))
+
+const dimensionHandleActive = (id: string | null) =>
+  !!id &&
+  (id.startsWith("corner-") ||
+    id.startsWith("height-z") ||
+    id.startsWith("side-x") ||
+    id.startsWith("side-y"))
+
+interface DimEdgeView {
+  axis: DimAxis
+  length: number
+  color: string
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  ex1: number
+  ey1: number
+  ex2: number
+  ey2: number
+  lx: number
+  ly: number
+}
+
+interface DimCalloutView {
+  id: string
+  edges: DimEdgeView[]
+}
 
 export interface ViewportCanvasProps {
   sceneRef: React.MutableRefObject<SceneControllerHandle | null>
@@ -93,6 +138,14 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
   } = props
 
   const mountRef = React.useRef<HTMLDivElement>(null)
+  const cornerUiRef = React.useRef({
+    hoverId: null as string | null,
+    pinnedId: null as string | null,
+    editing: null as DimAxis | null,
+  })
+  const calloutGeomRef = React.useRef<DimCalloutView | null>(null)
+  const [cornerCallout, setCornerCallout] = React.useState<DimCalloutView | null>(null)
+  const [dimDraft, setDimDraft] = React.useState<Partial<Record<DimAxis, string>>>({})
   const commitRef = React.useRef(commitObjects)
   React.useEffect(() => {
     commitRef.current = commitObjects
@@ -232,6 +285,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       startAngle: number
       scaleDrag: null | {
         kind: "corner" | "face"
+        handleId: string
         sign: THREE.Vector3
         center: THREE.Vector3
         quat: THREE.Quaternion
@@ -417,6 +471,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         if (axisHit) {
           const ud = axisHit.object.userData
           const axis = ud.gizmoAxis as string
+          const handleId = ud.handleId as string | undefined
+          cornerUiRef.current.pinnedId =
+            handleId && showsDimensionCallout(ud) ? handleId : null
           if (ud.signX !== undefined) {
             const kind = ud.handleKind === "face" ? "face" : "corner"
             const sign = { x: ud.signX as number, y: ud.signY as number, z: ud.signZ as number }
@@ -438,6 +495,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                 planeNormal: planeN,
                 scaleDrag: {
                   kind,
+                  handleId: ud.handleId as string,
                   sign: new THREE.Vector3(sign.x, sign.y, sign.z),
                   center: frame.center.clone(),
                   quat: frame.quaternion,
@@ -652,12 +710,16 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         const mode = sceneRef.current?.toolMode || "move"
         if (mode === "transform" && transformRig.root.visible) {
           const gHits = raycaster.intersectObjects(transformRig.getHitTargets(), false)
-          hov =
-            gHits.find((h) => h.object.userData?.handleId)?.object.userData
-              ?.handleId || null
+          const hitUd = gHits.find((h) => h.object.userData?.handleId)?.object.userData
+          hov = hitUd?.handleId || null
+          if (hov && showsDimensionCallout(hitUd)) cornerUiRef.current.hoverId = hov
+          else if (!hov && nearCallout(e.clientX, e.clientY)) {
+            /* Keep the hovered corner while the pointer moves onto its inputs. */
+          } else cornerUiRef.current.hoverId = null
           transformRig.setHovered(hov)
           gizmoCtrl.setHovered(null)
         } else {
+          cornerUiRef.current.hoverId = null
           transformRig.setHovered(null)
           if (gizmoCtrl.root.visible) {
             const gHits = raycaster.intersectObjects(
@@ -1016,6 +1078,115 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     })
     ro.observe(container)
 
+    const ndc = new THREE.Vector3()
+    let calloutSig = ""
+
+    function nearCallout(clientX: number, clientY: number) {
+      const geom = calloutGeomRef.current
+      const host = container?.parentElement
+      if (!geom || !container || !host) return false
+      const rect = host.getBoundingClientRect()
+      const x = clientX - rect.left
+      const y = clientY - rect.top
+      return geom.edges.some((edge) => {
+        if (distToSegment(x, y, edge.x1, edge.y1, edge.x2, edge.y2) < 36) return true
+        if (distToSegment(x, y, edge.ex1, edge.ey1, edge.x1, edge.y1) < 18) return true
+        if (distToSegment(x, y, edge.ex2, edge.ey2, edge.x2, edge.y2) < 18) return true
+        return Math.hypot(x - edge.lx, y - edge.ly) < 72
+      })
+    }
+
+    const publishCornerCallout = () => {
+      const ui = cornerUiRef.current
+      const mode = sceneRef.current?.toolMode
+      const dragId = activeDrag?.scaleDrag?.handleId ?? null
+      const hoverDim = dimensionHandleActive(ui.hoverId)
+      const activeId = dragId ?? (hoverDim ? ui.hoverId : ui.pinnedId)
+      const hide = () => {
+        calloutGeomRef.current = null
+        if (calloutSig !== "") {
+          calloutSig = ""
+          setCornerCallout(null)
+        }
+      }
+      if (
+        mode !== "transform" ||
+        !transformRig.root.visible ||
+        !activeId ||
+        !dimensionHandleActive(activeId)
+      ) {
+        hide()
+        return
+      }
+      const data = activeId.startsWith("height-z")
+        ? transformRig.getHeightCallout(activeId)
+        : activeId.startsWith("side-x") || activeId.startsWith("side-y")
+          ? transformRig.getPlanarFaceCallout(activeId)
+          : transformRig.getCornerCallout(activeId)
+      const host = container?.parentElement
+      if (!data || !container || !host) {
+        hide()
+        return
+      }
+      const measured = "edges" in data ? data.edges : [data.edge]
+      transformRig.root.updateMatrixWorld(true)
+      activeCam.updateMatrixWorld()
+      const hostRect = host.getBoundingClientRect()
+      const canvasRect = renderer.domElement.getBoundingClientRect()
+      const originX = canvasRect.left - hostRect.left
+      const originY = canvasRect.top - hostRect.top
+      const project = (point: THREE.Vector3) => {
+        ndc.copy(point).project(activeCam)
+        return {
+          x: originX + (ndc.x + 1) * 0.5 * canvasRect.width,
+          y: originY + (-ndc.y + 1) * 0.5 * canvasRect.height,
+          behind: ndc.z > 1 || !Number.isFinite(ndc.x) || !Number.isFinite(ndc.y),
+        }
+      }
+      const edges: DimEdgeView[] = []
+      for (const edge of measured) {
+        const boxStart = project(edge.boxStart)
+        const boxEnd = project(edge.boxEnd)
+        const start = project(edge.start)
+        const end = project(edge.end)
+        const mid = project(edge.mid)
+        if (start.behind || end.behind || mid.behind) continue
+        edges.push({
+          axis: edge.axis,
+          length: edge.length,
+          color: TRANSFORM_AXIS_CSS[edge.axis],
+          ex1: boxStart.x,
+          ey1: boxStart.y,
+          ex2: boxEnd.x,
+          ey2: boxEnd.y,
+          x1: start.x,
+          y1: start.y,
+          x2: end.x,
+          y2: end.y,
+          lx: mid.x,
+          ly: mid.y,
+        })
+      }
+      if (edges.length === 0) {
+        hide()
+        return
+      }
+      const view: DimCalloutView = { id: data.id, edges }
+      calloutGeomRef.current = view
+      const sig = `${view.id}|${edges
+        .map(
+          (edge) =>
+            `${edge.axis}:${edge.x1.toFixed(0)},${edge.y1.toFixed(0)},${edge.x2.toFixed(0)},${edge.y2.toFixed(0)},${edge.length.toFixed(2)}`
+        )
+        .join(";")}`
+      if (sig !== calloutSig) {
+        calloutSig = sig
+        setCornerCallout(view)
+      }
+    }
+
+    controls.addEventListener("change", publishCornerCallout)
+
     let raf = 0
     const animate = () => {
       raf = requestAnimationFrame(animate)
@@ -1023,6 +1194,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       controls.autoRotateSpeed = 2.2
       controls.update()
       transformRig.update(activeCam)
+      publishCornerCallout()
       gizmoCtrl.updatePerspectiveOrientation(activeCam)
       renderer.render(scene, activeCam)
     }
@@ -1148,6 +1320,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
 
     return () => {
       cancelAnimationFrame(raf)
+      controls.removeEventListener("change", publishCornerCallout)
       transformRig.dispose()
       ro.disconnect()
       dom.removeEventListener("contextmenu", onContextMenu)
@@ -1513,5 +1686,360 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     }
   }, [objects, selectedIds, showWireframe, showEdgeHighlight, accent, accentBorder, toolMode])
 
-  return <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+  const selectionKey = selectedIds.join("\0")
+  React.useEffect(() => {
+    cornerUiRef.current.pinnedId = null
+    cornerUiRef.current.hoverId = null
+    cornerUiRef.current.editing = null
+    calloutGeomRef.current = null
+    setCornerCallout(null)
+    setDimDraft((draft) => (Object.keys(draft).length ? {} : draft))
+  }, [selectionKey, toolMode])
+
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA") return
+      if (!cornerUiRef.current.pinnedId) return
+      cornerUiRef.current.pinnedId = null
+      cornerUiRef.current.editing = null
+      if (!cornerUiRef.current.hoverId) {
+        calloutGeomRef.current = null
+        setCornerCallout(null)
+      }
+      setDimDraft((draft) => (Object.keys(draft).length ? {} : draft))
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
+  const applyCornerDimension = (
+    handleId: string,
+    axis: DimAxis,
+    raw: string,
+    uniform: boolean,
+    symmetric: boolean
+  ) => {
+    const api = sceneRef.current as
+      | (SceneControllerHandle & { transformRig: TransformBoxRig })
+      | null
+    const rig = api?.transformRig
+    if (!rig || api.selectedIds.length === 0) return
+    const height = handleId.startsWith("height-z") ? rig.getHeightCallout(handleId) : null
+    const planar =
+      handleId.startsWith("side-x") || handleId.startsWith("side-y")
+        ? rig.getPlanarFaceCallout(handleId)
+        : null
+    const corner = height || planar ? null : rig.getCornerCallout(handleId)
+    const sign = height?.sign ?? planar?.sign ?? corner?.sign
+    const edge =
+      height?.edge ??
+      planar?.edge ??
+      corner?.edges.find((item) => item.axis === axis)
+    if (!sign || !edge || edge.length < 1e-6) return
+    const nextLength = parseFloat(raw.replace(",", "."))
+    if (!Number.isFinite(nextLength) || nextLength <= 0) return
+    if (Math.abs(nextLength - Number(fmt(edge.length))) < 1e-4) return
+    const frame = rig.getFrame()
+    const half = { x: frame.hx, y: frame.hy, z: frame.hz }
+    const kind = height || planar ? "face" : "corner"
+    const localDelta = deltaForAxisFactor(
+      kind,
+      sign,
+      half,
+      axis,
+      nextLength / edge.length,
+      uniform,
+      symmetric
+    )
+    const { fx, fy, fz, anchor } = rigScaleFactors(
+      kind,
+      sign,
+      half,
+      localDelta,
+      uniform,
+      symmetric
+    )
+    if (
+      Math.abs(fx - 1) < 1e-6 &&
+      Math.abs(fy - 1) < 1e-6 &&
+      Math.abs(fz - 1) < 1e-6
+    ) {
+      return
+    }
+    const quat = frame.quaternion
+    const anchorWorld = anchor.clone().applyQuaternion(quat).add(frame.center)
+    const ids = new Set(api.selectedIds)
+    commitRef.current(
+      (prev) =>
+        prev.map((obj) =>
+          ids.has(obj.id)
+            ? scaleObjectAboutAnchor(obj, fx, fy, fz, anchorWorld, quat)
+            : obj
+        ),
+      !api.isEditingGroup
+    )
+  }
+
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+      {cornerCallout && (
+        <CornerDimensionCallout
+          callout={cornerCallout}
+          drafts={dimDraft}
+          onDraft={(axis, value) => setDimDraft((draft) => ({ ...draft, [axis]: value }))}
+          onFocusAxis={(axis, handleId) => {
+            cornerUiRef.current.editing = axis
+            cornerUiRef.current.pinnedId = handleId
+          }}
+          onCommit={applyCornerDimension}
+          onCancel={(axis) => {
+            cornerUiRef.current.editing = null
+            setDimDraft((draft) => {
+              if (draft[axis] === undefined) return draft
+              const next = { ...draft }
+              delete next[axis]
+              return next
+            })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function scaleObjectAboutAnchor(
+  obj: SceneObject,
+  fx: number,
+  fy: number,
+  fz: number,
+  anchorWorld: THREE.Vector3,
+  quat: THREE.Quaternion
+): SceneObject {
+  const rel = new THREE.Vector3(obj.pos.x * 10, obj.pos.y * 10, obj.pos.z * 10).sub(
+    anchorWorld
+  )
+  rel.applyQuaternion(quat.clone().invert())
+  rel.x *= fx
+  rel.y *= fy
+  rel.z *= fz
+  rel.applyQuaternion(quat)
+  const next = anchorWorld.clone().add(rel)
+  return {
+    ...obj,
+    pos: {
+      x: Number((next.x / 10).toFixed(2)),
+      y: Number((next.y / 10).toFixed(2)),
+      z: Number((next.z / 10).toFixed(2)),
+    },
+    scale: {
+      sx: Number((obj.scale.sx * fx).toFixed(3)),
+      sy: Number((obj.scale.sy * fy).toFixed(3)),
+      sz: Number((obj.scale.sz * fz).toFixed(3)),
+    },
+  }
+}
+
+function distToSegment(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+) {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len2 = dx * dx + dy * dy
+  const t =
+    len2 < 1e-6
+      ? 0
+      : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2))
+  return Math.hypot(px - (x1 + dx * t), py - (y1 + dy * t))
+}
+
+function dimensionArrow(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  atStart: boolean
+) {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len = Math.hypot(dx, dy) || 1
+  const ux = dx / len
+  const uy = dy / len
+  const px = -uy * 3.25
+  const py = ux * 3.25
+  const tipX = atStart ? x1 : x2
+  const tipY = atStart ? y1 : y2
+  const sign = atStart ? 1 : -1
+  const baseX = tipX + sign * ux * 8
+  const baseY = tipY + sign * uy * 8
+  return `M ${tipX} ${tipY} L ${baseX + px} ${baseY + py} L ${baseX - px} ${baseY - py} Z`
+}
+
+function blockOverlayEvent(e: React.SyntheticEvent) {
+  e.stopPropagation()
+}
+
+/** Let an in-progress corner drag keep receiving pointermove. */
+function blockIdlePointer(e: React.PointerEvent) {
+  if (e.buttons === 0) e.stopPropagation()
+}
+
+function CornerDimensionCallout({
+  callout,
+  drafts,
+  onDraft,
+  onFocusAxis,
+  onCommit,
+  onCancel,
+}: {
+  callout: DimCalloutView
+  drafts: Partial<Record<DimAxis, string>>
+  onDraft: (axis: DimAxis, value: string) => void
+  onFocusAxis: (axis: DimAxis, handleId: string) => void
+  onCommit: (
+    handleId: string,
+    axis: DimAxis,
+    raw: string,
+    uniform: boolean,
+    symmetric: boolean
+  ) => void
+  onCancel: (axis: DimAxis) => void
+}) {
+  return (
+    <>
+      <svg
+        width="100%"
+        height="100%"
+        style={{
+          position: "absolute",
+          inset: 0,
+          overflow: "visible",
+          pointerEvents: "none",
+        }}
+      >
+        {callout.edges.map((edge) => (
+          <g key={edge.axis}>
+            <line
+              x1={edge.ex1}
+              y1={edge.ey1}
+              x2={edge.x1}
+              y2={edge.y1}
+              stroke={edge.color}
+              strokeWidth={1}
+              opacity={0.85}
+            />
+            <line
+              x1={edge.ex2}
+              y1={edge.ey2}
+              x2={edge.x2}
+              y2={edge.y2}
+              stroke={edge.color}
+              strokeWidth={1}
+              opacity={0.85}
+            />
+            <line
+              x1={edge.x1}
+              y1={edge.y1}
+              x2={edge.x2}
+              y2={edge.y2}
+              stroke={edge.color}
+              strokeWidth={1.5}
+            />
+            <path
+              d={dimensionArrow(edge.x1, edge.y1, edge.x2, edge.y2, true)}
+              fill={edge.color}
+            />
+            <path
+              d={dimensionArrow(edge.x1, edge.y1, edge.x2, edge.y2, false)}
+              fill={edge.color}
+            />
+          </g>
+        ))}
+      </svg>
+      {callout.edges.map((edge) => (
+        <label
+          key={edge.axis}
+          style={{
+            position: "absolute",
+            left: edge.lx,
+            top: edge.ly,
+            transform: "translate(-50%, -50%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            pointerEvents: "auto",
+            zIndex: 5,
+          }}
+          onPointerDown={blockOverlayEvent}
+          onPointerMove={blockIdlePointer}
+          onPointerUp={blockOverlayEvent}
+          onClick={blockOverlayEvent}
+          onKeyDown={blockOverlayEvent}
+          onKeyUp={blockOverlayEvent}
+        >
+          <input
+            className="adivi-num-input"
+            type="text"
+            inputMode="decimal"
+            aria-label={`${edge.axis.toUpperCase()} dimension in centimetres`}
+            value={drafts[edge.axis] ?? fmt(edge.length)}
+            onFocus={(e) => {
+              onFocusAxis(edge.axis, callout.id)
+              onDraft(edge.axis, e.currentTarget.value)
+              const input = e.currentTarget
+              requestAnimationFrame(() => input.select())
+            }}
+            onChange={(e) => onDraft(edge.axis, e.target.value)}
+            onBlur={() => onCancel(edge.axis)}
+            onPointerDown={blockOverlayEvent}
+            onPointerMove={blockIdlePointer}
+            onPointerUp={blockOverlayEvent}
+            onClick={blockOverlayEvent}
+            onKeyUp={blockOverlayEvent}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === "Enter") {
+                e.preventDefault()
+                onCommit(
+                  callout.id,
+                  edge.axis,
+                  e.currentTarget.value,
+                  e.shiftKey,
+                  e.ctrlKey || e.altKey || e.metaKey
+                )
+                e.currentTarget.blur()
+              } else if (e.key === "Escape") {
+                e.preventDefault()
+                onCancel(edge.axis)
+                e.currentTarget.blur()
+              }
+            }}
+            style={{
+              width: 68,
+              height: 22,
+              borderRadius: 5,
+              border: `1px solid ${edge.color}`,
+              backgroundColor: "rgba(15, 23, 42, 0.92)",
+              color: "#F8FAFC",
+              padding: "0 4px",
+              fontSize: 12,
+              fontWeight: 700,
+              textAlign: "center",
+              outline: "none",
+              boxSizing: "border-box",
+              userSelect: "text",
+              boxShadow: `0 0 0 1px ${edge.color}, 0 4px 14px rgba(0,0,0,0.35)`,
+            }}
+          />
+        </label>
+      ))}
+    </>
+  )
 }

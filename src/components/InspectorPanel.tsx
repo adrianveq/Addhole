@@ -5,7 +5,7 @@ import { inp, lbl, neutralChipBtn } from "../styles/uiStyles"
 import { Icon } from "./Icon"
 
 const axisInk = (ax: "x" | "y" | "z") =>
-  ax === "x" ? "#EF4444" : ax === "y" ? "#22C55E" : "#3B82F6"
+  ax === "x" ? "#EB9090" : ax === "y" ? "#78D896" : "#84B4F8"
 
 export function InspectorPanel({
   topOffset,

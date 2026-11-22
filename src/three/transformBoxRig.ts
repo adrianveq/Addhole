@@ -32,6 +32,12 @@ export interface TransformBoxRig {
   setHovered: (handleId: string | null) => void
   getHitTargets: () => THREE.Object3D[]
   getFrame: () => TransformFrame
+  /** X/Y edges on the rig base plane for a corner handle. */
+  getCornerCallout: (handleId: string) => CornerCallout | null
+  /** Full height for a blue Z face handle. */
+  getHeightCallout: (handleId: string) => HeightCallout | null
+  /** Single X or Y span on the base plane for a side face handle. */
+  getPlanarFaceCallout: (handleId: string) => PlanarFaceCallout | null
   update: (camera: THREE.Camera) => void
   dispose: () => void
 }
@@ -54,13 +60,31 @@ type RotAxis = "rx" | "ry" | "rz"
 
 const UP = new THREE.Vector3(0, 1, 0)
 const RIG_Z = new THREE.Vector3(0, 0, 1)
-const Z_SHAFT = 4.2
+const Z_SHAFT = 1.26
 const Z_HEAD = 4.6
 const MIN_SCALE = 0.05
 const AXIS_COLORS = {
-  x: 0xef4444,
-  y: 0x22c55e,
-  z: 0x3b82f6,
+  x: 0xeb9090,
+  y: 0x78d896,
+  z: 0x84b4f8,
+}
+const axisCss = (hex: number) => `#${hex.toString(16).padStart(6, "0")}`
+export const TRANSFORM_AXIS_CSS = {
+  x: axisCss(AXIS_COLORS.x),
+  y: axisCss(AXIS_COLORS.y),
+  z: axisCss(AXIS_COLORS.z),
+}
+/** Rig space is millimetres; the UI shows centimetres. */
+const DISPLAY_PER_WORLD = 0.1
+/** Fixed local gap outside the box. Independent of camera distance. */
+const CALLOUT_OUTSET = 18
+
+/** Flip a local offset so it points from the box center toward the edge/anchor. */
+function outwardAwayFromCenter(edgeLocal: THREE.Vector3, outward: THREE.Vector3) {
+  const fromCenter = edgeLocal.clone()
+  if (fromCenter.lengthSq() < 1e-8) return outward
+  if (outward.dot(fromCenter) < 0) outward.negate()
+  return outward
 }
 const CORNER_COLOR = 0xf8fafc
 const ARC_START = Math.PI * 0.2
@@ -87,6 +111,55 @@ const uniformKFromVector = (vx: number, vy: number, vz: number, localDelta: THRE
   return Math.max(MIN_SCALE, (len + localDelta.dot(v.clone().normalize())) / len)
 }
 
+/** Diagonal used by uniform corner scale. Same vector the drag path samples. */
+function cornerUniformVector(
+  sign: { x: number; y: number; z: number },
+  half: { x: number; y: number; z: number },
+  symmetric: boolean
+) {
+  if (symmetric) {
+    return new THREE.Vector3(sign.x * half.x, sign.y * half.y, sign.z * half.z)
+  }
+  const ax = -sign.x * half.x
+  const ay = -sign.y * half.y
+  const az = (sign.z > 0 ? 1 : -1) * half.z
+  return new THREE.Vector3(
+    sign.x * half.x - ax,
+    sign.y * half.y - ay,
+    sign.z * half.z - az
+  )
+}
+
+/**
+ * Pointer delta that makes `rigScaleFactors` scale `axis` by `factor`.
+ * Uniform corner scale moves along the same diagonal the drag uses, so every
+ * axis receives that factor. Anchor selection stays inside `rigScaleFactors`.
+ */
+export function deltaForAxisFactor(
+  kind: ScaleKind,
+  sign: { x: number; y: number; z: number },
+  half: { x: number; y: number; z: number },
+  axis: "x" | "y" | "z",
+  factor: number,
+  uniform: boolean,
+  symmetric: boolean
+) {
+  const f = Math.max(MIN_SCALE, factor)
+  if (uniform && kind === "corner") {
+    return cornerUniformVector(sign, half, symmetric).multiplyScalar(f - 1)
+  }
+  const signA = axis === "x" ? sign.x : axis === "y" ? sign.y : sign.z
+  const halfA = axis === "x" ? half.x : axis === "y" ? half.y : half.z
+  if (!signA || halfA < 1e-4) return new THREE.Vector3()
+  const span = symmetric ? halfA : 2 * halfA
+  const delta = signA * (f - 1) * span
+  return new THREE.Vector3(
+    axis === "x" ? delta : 0,
+    axis === "y" ? delta : 0,
+    axis === "z" ? delta : 0
+  )
+}
+
 /** Per-axis factors from the pointer-down half extents. Anchor is rig-local. */
 export function rigScaleFactors(
   kind: ScaleKind,
@@ -107,24 +180,8 @@ export function rigScaleFactors(
   if (uniform) {
     let k = 1
     if (kind === "corner") {
-      if (symmetric) {
-        k = uniformKFromVector(
-          sign.x * half.x,
-          sign.y * half.y,
-          sign.z * half.z,
-          localDelta
-        )
-      } else {
-        const ax = -sign.x * half.x
-        const ay = -sign.y * half.y
-        const az = -half.z
-        k = uniformKFromVector(
-          sign.x * half.x - ax,
-          sign.y * half.y - ay,
-          sign.z * half.z - az,
-          localDelta
-        )
-      }
+      const probe = cornerUniformVector(sign, half, symmetric)
+      k = uniformKFromVector(probe.x, probe.y, probe.z, localDelta)
     } else {
       k = sign.x ? rawX : sign.y ? rawY : rawZ
     }
@@ -142,7 +199,11 @@ export function rigScaleFactors(
   const anchor = symmetric
     ? new THREE.Vector3(0, 0, 0)
     : uniform && kind === "corner"
-      ? new THREE.Vector3(-sign.x * half.x, -sign.y * half.y, -half.z)
+      ? new THREE.Vector3(
+          -sign.x * half.x,
+          -sign.y * half.y,
+          (sign.z > 0 ? 1 : -1) * half.z
+        )
       : new THREE.Vector3(
           sign.x ? -sign.x * half.x : 0,
           sign.y ? -sign.y * half.y : 0,
@@ -150,6 +211,208 @@ export function rigScaleFactors(
         )
 
   return { fx, fy, fz, anchor }
+}
+
+export interface CornerEdgeMeasure {
+  axis: "x" | "y"
+  /** Full edge length in display centimetres. */
+  length: number
+  direction: THREE.Vector3
+  /** Unit world vector in the base plane, pointing away from the box. */
+  outward: THREE.Vector3
+  /** On-box edge, base plane. */
+  boxStart: THREE.Vector3
+  boxEnd: THREE.Vector3
+  /** Dimension segment, base plane, fixed outset from the box edge. */
+  start: THREE.Vector3
+  end: THREE.Vector3
+  mid: THREE.Vector3
+}
+
+export interface CornerCallout {
+  id: string
+  sign: { x: number; y: number; z: number }
+  edges: [CornerEdgeMeasure, CornerEdgeMeasure]
+}
+
+/** X and Y edges on the rig's base plane (local z = -hz). Lengths are centimetres. */
+export function cornerEdgeMeasures(
+  frame: TransformFrame,
+  sign: { x: number; y: number; z: number }
+): [CornerEdgeMeasure, CornerEdgeMeasure] {
+  const { center, quaternion, hx, hy, hz } = frame
+  const baseZ = -hz
+  const toWorld = (x: number, y: number, z: number) =>
+    new THREE.Vector3(x, y, z).applyQuaternion(quaternion).add(center)
+  const measure = (axis: "x" | "y"): CornerEdgeMeasure => {
+    const along = axis === "x" ? hx : hy
+    const side = axis === "x" ? sign.y * hy : sign.x * hx
+    const out = CALLOUT_OUTSET
+    const boxStart =
+      axis === "x"
+        ? toWorld(sign.x * along, side, baseZ)
+        : toWorld(side, sign.y * along, baseZ)
+    const boxEnd =
+      axis === "x"
+        ? toWorld(-sign.x * along, side, baseZ)
+        : toWorld(side, -sign.y * along, baseZ)
+    const start =
+      axis === "x"
+        ? toWorld(sign.x * along, side + sign.y * out, baseZ)
+        : toWorld(side + sign.x * out, sign.y * along, baseZ)
+    const end =
+      axis === "x"
+        ? toWorld(-sign.x * along, side + sign.y * out, baseZ)
+        : toWorld(side + sign.x * out, -sign.y * along, baseZ)
+    const mid = start.clone().lerp(end, 0.5)
+    const direction = end.clone().sub(start)
+    const span = direction.length()
+    if (span > 1e-8) direction.multiplyScalar(1 / span)
+    const edgeLocal =
+      axis === "x"
+        ? new THREE.Vector3(0, sign.y * hy, 0)
+        : new THREE.Vector3(sign.x * hx, 0, 0)
+    const outwardLocal = outwardAwayFromCenter(
+      edgeLocal,
+      axis === "x" ? new THREE.Vector3(0, sign.y, 0) : new THREE.Vector3(sign.x, 0, 0)
+    ).applyQuaternion(quaternion)
+    return {
+      axis,
+      length: span * DISPLAY_PER_WORLD,
+      direction,
+      outward: outwardLocal,
+      boxStart,
+      boxEnd,
+      start,
+      end,
+      mid,
+    }
+  }
+  return [measure("x"), measure("y")]
+}
+
+export interface HeightEdgeMeasure {
+  axis: "z"
+  /** Full height in display centimetres. */
+  length: number
+  direction: THREE.Vector3
+  /** Unit world vector in the base plane, pointing away from the box and the Z arrow. */
+  outward: THREE.Vector3
+  boxStart: THREE.Vector3
+  boxEnd: THREE.Vector3
+  start: THREE.Vector3
+  end: THREE.Vector3
+  mid: THREE.Vector3
+}
+
+export interface HeightCallout {
+  id: string
+  sign: { x: number; y: number; z: number }
+  edge: HeightEdgeMeasure
+}
+
+export interface PlanarFaceCallout {
+  id: string
+  sign: { x: number; y: number; z: number }
+  edge: CornerEdgeMeasure | HeightEdgeMeasure
+}
+
+/** One full width/depth span on an outer base edge (local z = -hz), not through the center. */
+export function planarFaceEdgeMeasure(
+  frame: TransformFrame,
+  axis: "x" | "y",
+  sign: { x: number; y: number; z: number }
+): CornerEdgeMeasure {
+  const { center, quaternion, hx, hy, hz } = frame
+  const baseZ = -hz
+  const toWorld = (x: number, y: number, z: number) =>
+    new THREE.Vector3(x, y, z).applyQuaternion(quaternion).add(center)
+  let start: THREE.Vector3
+  let end: THREE.Vector3
+  let edgeLocal: THREE.Vector3
+  let outwardLocal: THREE.Vector3
+  let boxStart: THREE.Vector3
+  let boxEnd: THREE.Vector3
+  if (axis === "x") {
+    const yEdge = sign.y !== 0 ? sign.y * hy : hy
+    const yOut = yEdge + Math.sign(yEdge || 1) * CALLOUT_OUTSET
+    boxStart = toWorld(-hx, yEdge, baseZ)
+    boxEnd = toWorld(hx, yEdge, baseZ)
+    start = toWorld(-hx, yOut, baseZ)
+    end = toWorld(hx, yOut, baseZ)
+    edgeLocal = new THREE.Vector3(0, yEdge, 0)
+    outwardLocal = outwardAwayFromCenter(edgeLocal, new THREE.Vector3(0, Math.sign(yEdge) || 1, 0))
+  } else {
+    const xEdge = sign.x !== 0 ? sign.x * hx : hx
+    const xOut = xEdge + Math.sign(xEdge || 1) * CALLOUT_OUTSET
+    boxStart = toWorld(xEdge, -hy, baseZ)
+    boxEnd = toWorld(xEdge, hy, baseZ)
+    start = toWorld(xOut, -hy, baseZ)
+    end = toWorld(xOut, hy, baseZ)
+    edgeLocal = new THREE.Vector3(xEdge, 0, 0)
+    outwardLocal = outwardAwayFromCenter(edgeLocal, new THREE.Vector3(Math.sign(xEdge) || 1, 0, 0))
+  }
+  const mid = start.clone().lerp(end, 0.5)
+  const direction = end.clone().sub(start)
+  const span = direction.length()
+  if (span > 1e-8) direction.multiplyScalar(1 / span)
+  const outward = outwardLocal.applyQuaternion(quaternion)
+  return {
+    axis,
+    length: span * DISPLAY_PER_WORLD,
+    direction,
+    outward,
+    boxStart,
+    boxEnd,
+    start,
+    end,
+    mid,
+  }
+}
+
+/** Vertical span on an outer corner edge, from the base plane to the top. */
+export function heightEdgeMeasure(
+  frame: TransformFrame,
+  sign: { x: number; y: number; z: number }
+): HeightEdgeMeasure {
+  const { center, quaternion, hx, hy, hz } = frame
+  const toWorld = (x: number, y: number, z: number) =>
+    new THREE.Vector3(x, y, z).applyQuaternion(quaternion).add(center)
+  const xEdge = sign.x !== 0 ? sign.x * hx : hx
+  const yEdge = sign.y !== 0 ? sign.y * hy : hy
+  const boxStart = toWorld(xEdge, yEdge, -hz)
+  const boxEnd = toWorld(xEdge, yEdge, hz)
+  const start = toWorld(
+    xEdge + (xEdge === 0 ? 0 : Math.sign(xEdge)) * CALLOUT_OUTSET,
+    yEdge + (yEdge === 0 ? 0 : Math.sign(yEdge)) * CALLOUT_OUTSET,
+    -hz
+  )
+  const end = toWorld(
+    xEdge + (xEdge === 0 ? 0 : Math.sign(xEdge)) * CALLOUT_OUTSET,
+    yEdge + (yEdge === 0 ? 0 : Math.sign(yEdge)) * CALLOUT_OUTSET,
+    hz
+  )
+  const mid = start.clone().lerp(end, 0.5)
+  const direction = end.clone().sub(start)
+  const span = direction.length()
+  if (span > 1e-8) direction.multiplyScalar(1 / span)
+  const edgeLocal = new THREE.Vector3(xEdge, yEdge, 0)
+  let outwardLocal = edgeLocal.clone()
+  if (outwardLocal.lengthSq() < 1e-8) outwardLocal.set(1, 0, 0)
+  else outwardLocal.normalize()
+  outwardLocal = outwardAwayFromCenter(edgeLocal, outwardLocal)
+  const outward = outwardLocal.applyQuaternion(quaternion)
+  return {
+    axis: "z",
+    length: span * DISPLAY_PER_WORLD,
+    direction,
+    outward,
+    boxStart,
+    boxEnd,
+    start,
+    end,
+    mid,
+  }
 }
 
 function depthPair(color: number) {
@@ -396,7 +659,7 @@ export function createTransformBoxRig(): TransformBoxRig {
     }
     const arrowHot = hoveredId === "move-z"
     arrow.scale.setScalar(hs * (arrowHot ? 1.16 : 1))
-    const arrowColor = arrowHot ? 0x93c5fd : AXIS_COLORS.z
+    const arrowColor = arrowHot ? 0xadc8fa : AXIS_COLORS.z
     arrowMats.front.color.set(arrowColor)
     arrowMats.back.color.set(arrowColor)
     for (const arc of arcs) {
@@ -432,6 +695,66 @@ export function createTransformBoxRig(): TransformBoxRig {
       hy,
       hz,
     }),
+    getCornerCallout: (handleId) => {
+      const handle = scaleHandles.find((slot) => slot.id === handleId && slot.kind === "corner")
+      if (!handle) return null
+      return {
+        id: handle.id,
+        sign: { x: handle.sign.x, y: handle.sign.y, z: handle.sign.z },
+        edges: cornerEdgeMeasures(
+          {
+            center: root.position.clone(),
+            quaternion: root.quaternion.clone(),
+            hx,
+            hy,
+            hz,
+          },
+          handle.sign
+        ),
+      }
+    },
+    getHeightCallout: (handleId) => {
+      const handle = scaleHandles.find(
+        (slot) => slot.id === handleId && slot.kind === "face" && slot.axis === "sz"
+      )
+      if (!handle) return null
+      return {
+        id: handle.id,
+        sign: { x: handle.sign.x, y: handle.sign.y, z: handle.sign.z },
+        edge: heightEdgeMeasure(
+          {
+            center: root.position.clone(),
+            quaternion: root.quaternion.clone(),
+            hx,
+            hy,
+            hz,
+          },
+          handle.sign
+        ),
+      }
+    },
+    getPlanarFaceCallout: (handleId) => {
+      const handle = scaleHandles.find(
+        (slot) =>
+          slot.id === handleId &&
+          slot.kind === "face" &&
+          (slot.axis === "sx" || slot.axis === "sy")
+      )
+      if (!handle) return null
+      const axis = handle.axis === "sx" ? "x" : "y"
+      const frame = {
+        center: root.position.clone(),
+        quaternion: root.quaternion.clone(),
+        hx,
+        hy,
+        hz,
+      }
+      return {
+        id: handle.id,
+        sign: { x: handle.sign.x, y: handle.sign.y, z: handle.sign.z },
+        edge: planarFaceEdgeMeasure(frame, axis, handle.sign),
+      }
+    },
     update: (camera) => {
       if (!root.visible || targets.length === 0) return
 
@@ -489,7 +812,7 @@ export function createTransformBoxRig(): TransformBoxRig {
       for (const handle of scaleHandles) handle.place(ext, handle.group.position)
 
       const signZ = camLocal.z >= 0 ? 1 : -1
-      const gap = Math.max(hs * 2.45, 2.4)
+      const gap = Math.max(hs * 5.2, 6.5)
       arrow.position.set(0, 0, signZ * (hz + gap))
       arrow.rotation.set(signZ > 0 ? Math.PI / 2 : -Math.PI / 2, 0, 0)
 

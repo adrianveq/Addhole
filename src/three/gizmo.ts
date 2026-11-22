@@ -176,15 +176,15 @@ export function buildModeGizmo() {
     }
   }
 
-  addMoveArrow("mx", 0xef4444)
-  addMoveArrow("my", 0x22c55e)
-  addMoveArrow("mz", 0x3b82f6)
-  addRotateRing("rx", 0xef4444)
-  addRotateRing("ry", 0x22c55e)
-  addRotateRing("rz", 0x38bdf8)
-  addScaleHandle("sx", 0xef4444)
-  addScaleHandle("sy", 0x22c55e)
-  addScaleHandle("sz", 0x3b82f6)
+  addMoveArrow("mx", 0xeb9090)
+  addMoveArrow("my", 0x78d896)
+  addMoveArrow("mz", 0x84b4f8)
+  addRotateRing("rx", 0xeb9090)
+  addRotateRing("ry", 0x78d896)
+  addRotateRing("rz", 0x84b4f8)
+  addScaleHandle("sx", 0xeb9090)
+  addScaleHandle("sy", 0x78d896)
+  addScaleHandle("sz", 0x84b4f8)
   addScaleHandle("sall", 0xe2e8f0)
   root.renderOrder = 1000
 
