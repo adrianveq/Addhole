@@ -1,5 +1,15 @@
 import * as THREE from "three"
 import { ToolMode } from "../types/editor"
+import { AXIS_COLORS, BED_AXIS } from "./transformBoxRig"
+
+const HANDLE_UP = new THREE.Vector3(0, 1, 0)
+
+/** Point a +Y-authored handle along a bed axis (+X, +Y, or +Z). */
+function pointHandleAlong(group: THREE.Object3D, axis: "x" | "y" | "z") {
+  const dir = BED_AXIS[axis]
+  if (dir.distanceToSquared(HANDLE_UP) < 1e-8) return
+  group.quaternion.setFromUnitVectors(HANDLE_UP, dir)
+}
 
 export function buildModeGizmo() {
   const root = new THREE.Group()
@@ -9,7 +19,9 @@ export function buildModeGizmo() {
   root.add(moveGroup, rotateGroup, scaleGroup)
 
   const entries: Record<string, { swapToBold: (bold: boolean) => void }> = {}
-  const ringUpdates: Array<(camPos: THREE.Vector3, gizmoPos: THREE.Vector3) => void> = []
+  const ringUpdates: Array<(toCamLocal: THREE.Vector3) => void> = []
+  const toCamLocal = new THREE.Vector3()
+  const invRootQuat = new THREE.Quaternion()
 
   const addMoveArrow = (axis: "mx" | "my" | "mz", color: number) => {
     const g = new THREE.Group()
@@ -41,8 +53,7 @@ export function buildModeGizmo() {
     hit.userData = { gizmoAxis: axis }
 
     g.add(shaft, head, hit)
-    if (axis === "mx") g.rotation.z = -Math.PI / 2
-    if (axis === "mz") g.rotation.x = Math.PI / 2
+    pointHandleAlong(g, axis === "mx" ? "x" : axis === "my" ? "y" : "z")
     moveGroup.add(g)
 
     entries[axis] = {
@@ -91,8 +102,7 @@ export function buildModeGizmo() {
     if (axis === "ry") g.rotation.x = Math.PI / 2
     rotateGroup.add(g)
 
-    ringUpdates.push((camPos, gizmoPos) => {
-      const toCam = camPos.clone().sub(gizmoPos)
+    ringUpdates.push((toCam) => {
       const ang =
         (axis === "rz"
           ? Math.atan2(toCam.y, toCam.x)
@@ -164,8 +174,7 @@ export function buildModeGizmo() {
     hit.userData = { gizmoAxis: axis }
 
     g.add(shaft, cube, hit)
-    if (axis === "sx") g.rotation.z = -Math.PI / 2
-    if (axis === "sz") g.rotation.x = Math.PI / 2
+    pointHandleAlong(g, axis === "sx" ? "x" : axis === "sy" ? "y" : "z")
     scaleGroup.add(g)
 
     entries[axis] = {
@@ -176,15 +185,15 @@ export function buildModeGizmo() {
     }
   }
 
-  addMoveArrow("mx", 0xeb9090)
-  addMoveArrow("my", 0x78d896)
-  addMoveArrow("mz", 0x84b4f8)
-  addRotateRing("rx", 0xeb9090)
-  addRotateRing("ry", 0x78d896)
-  addRotateRing("rz", 0x84b4f8)
-  addScaleHandle("sx", 0xeb9090)
-  addScaleHandle("sy", 0x78d896)
-  addScaleHandle("sz", 0x84b4f8)
+  addMoveArrow("mx", AXIS_COLORS.x)
+  addMoveArrow("my", AXIS_COLORS.y)
+  addMoveArrow("mz", AXIS_COLORS.z)
+  addRotateRing("rx", AXIS_COLORS.x)
+  addRotateRing("ry", AXIS_COLORS.y)
+  addRotateRing("rz", AXIS_COLORS.z)
+  addScaleHandle("sx", AXIS_COLORS.x)
+  addScaleHandle("sy", AXIS_COLORS.y)
+  addScaleHandle("sz", AXIS_COLORS.z)
   addScaleHandle("sall", 0xe2e8f0)
   root.renderOrder = 1000
 
@@ -214,7 +223,10 @@ export function buildModeGizmo() {
           )
         : THREE.MathUtils.clamp(cam.position.distanceTo(root.position) / 360, 0.55, 2.2)
       root.scale.setScalar(s)
-      for (const fn of ringUpdates) fn(cam.position, root.position)
+      toCamLocal.copy(cam.position).sub(root.position)
+      invRootQuat.copy(root.quaternion).invert()
+      toCamLocal.applyQuaternion(invRootQuat)
+      for (const fn of ringUpdates) fn(toCamLocal)
     },
   }
 }

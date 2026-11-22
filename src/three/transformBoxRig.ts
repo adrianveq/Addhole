@@ -63,10 +63,16 @@ const RIG_Z = new THREE.Vector3(0, 0, 1)
 const Z_SHAFT = 1.26
 const Z_HEAD = 4.6
 const MIN_SCALE = 0.05
-const AXIS_COLORS = {
+/** Bed convention: X and Y on the plate, Z up. Shared by every gizmo mode. */
+export const AXIS_COLORS = {
   x: 0xeb9090,
   y: 0x78d896,
   z: 0x84b4f8,
+}
+export const BED_AXIS = {
+  x: new THREE.Vector3(1, 0, 0),
+  y: new THREE.Vector3(0, 1, 0),
+  z: new THREE.Vector3(0, 0, 1),
 }
 const axisCss = (hex: number) => `#${hex.toString(16).padStart(6, "0")}`
 export const TRANSFORM_AXIS_CSS = {
@@ -673,6 +679,51 @@ export function createTransformBoxRig(): TransformBoxRig {
     }
   }
 
+  const syncFrame = () => {
+    if (targets.length === 0) return false
+    let key = ""
+    for (const mesh of targets) {
+      const p = mesh.position
+      const q = mesh.quaternion
+      const sc = mesh.scale
+      key += `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)},${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${q.w.toFixed(3)},${sc.x.toFixed(3)},${sc.y.toFixed(3)},${sc.z.toFixed(3)}|`
+    }
+    if (key === boxKey) return true
+    const primary = targets[targets.length - 1]
+    frameQuat.copy(primary.quaternion)
+    invQuat.copy(frameQuat).invert()
+    box3.makeEmpty()
+    for (const mesh of targets) {
+      const geom = (mesh as THREE.Mesh).geometry
+      if (!geom) continue
+      if (!geom.boundingBox) geom.computeBoundingBox()
+      const bb = geom.boundingBox
+      if (!bb || bb.isEmpty()) continue
+      mesh.updateMatrixWorld(true)
+      for (const x of [bb.min.x, bb.max.x]) {
+        for (const y of [bb.min.y, bb.max.y]) {
+          for (const z of [bb.min.z, bb.max.z]) {
+            corner.set(x, y, z).applyMatrix4(mesh.matrixWorld).applyQuaternion(invQuat)
+            box3.expandByPoint(corner)
+          }
+        }
+      }
+    }
+    if (box3.isEmpty()) return false
+    box3.getCenter(frameCenter)
+    box3.getSize(size)
+    hx = Math.max(size.x * 0.5, 0.4)
+    hy = Math.max(size.y * 0.5, 0.4)
+    hz = Math.max(size.z * 0.5, 0.4)
+    worldCenter.copy(frameCenter).applyQuaternion(frameQuat)
+    root.position.copy(worldCenter)
+    root.quaternion.copy(frameQuat)
+    root.scale.set(1, 1, 1)
+    boxLines.scale.set(hx * 2, hy * 2, hz * 2)
+    boxKey = key
+    return true
+  }
+
   return {
     root,
     setVisible: (visible) => {
@@ -682,6 +733,7 @@ export function createTransformBoxRig(): TransformBoxRig {
       targets.length = 0
       targets.push(...meshes)
       boxKey = ""
+      syncFrame()
     },
     hasTargets: () => targets.length > 0,
     setHovered: (handleId) => {
@@ -756,52 +808,7 @@ export function createTransformBoxRig(): TransformBoxRig {
       }
     },
     update: (camera) => {
-      if (!root.visible || targets.length === 0) return
-
-      let key = ""
-      for (const mesh of targets) {
-        const p = mesh.position
-        const q = mesh.quaternion
-        const sc = mesh.scale
-        key += `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)},${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${q.w.toFixed(3)},${sc.x.toFixed(3)},${sc.y.toFixed(3)},${sc.z.toFixed(3)}|`
-      }
-      if (key !== boxKey) {
-        const primary = targets[targets.length - 1]
-        frameQuat.copy(primary.quaternion)
-        invQuat.copy(frameQuat).invert()
-        box3.makeEmpty()
-        for (const mesh of targets) {
-          const geom = (mesh as THREE.Mesh).geometry
-          if (!geom) continue
-          if (!geom.boundingBox) geom.computeBoundingBox()
-          const bb = geom.boundingBox
-          if (!bb || bb.isEmpty()) continue
-          mesh.updateMatrixWorld(true)
-          for (const x of [bb.min.x, bb.max.x]) {
-            for (const y of [bb.min.y, bb.max.y]) {
-              for (const z of [bb.min.z, bb.max.z]) {
-                corner.set(x, y, z).applyMatrix4(mesh.matrixWorld).applyQuaternion(invQuat)
-                box3.expandByPoint(corner)
-              }
-            }
-          }
-        }
-        if (box3.isEmpty()) {
-          root.visible = false
-          return
-        }
-        box3.getCenter(frameCenter)
-        box3.getSize(size)
-        hx = Math.max(size.x * 0.5, 0.4)
-        hy = Math.max(size.y * 0.5, 0.4)
-        hz = Math.max(size.z * 0.5, 0.4)
-        worldCenter.copy(frameCenter).applyQuaternion(frameQuat)
-        root.position.copy(worldCenter)
-        root.quaternion.copy(frameQuat)
-        root.scale.set(1, 1, 1)
-        boxLines.scale.set(hx * 2, hy * 2, hz * 2)
-        boxKey = key
-      }
+      if (!syncFrame() || !root.visible) return
 
       root.updateMatrixWorld(true)
       camLocal.copy(camera.position)

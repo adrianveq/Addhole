@@ -72,21 +72,19 @@ export function TransformBar({
               onClick={() => setToolMode(t.id)}
               style={{
                 height: 30,
-                padding: "0 12px",
+                width: 32,
+                padding: 0,
                 borderRadius: Math.max(2, rSm - 2),
                 border: "none",
                 backgroundColor: active ? accent : "transparent",
                 color: active ? "#FFFFFF" : "#CBD5E1",
-                fontSize: 13,
-                fontWeight: 700,
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 6,
+                justifyContent: "center",
                 cursor: "pointer",
               }}
             >
-              <Icon name={t.icon} size={14} />
-              <span>{t.label}</span>
+              <Icon name={t.icon} size={16} />
             </button>
           )
         })}

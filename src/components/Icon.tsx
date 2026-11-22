@@ -239,22 +239,14 @@ export function Icon({
     ),
     transform: (
       <>
-        <rect x="6.2" y="4.2" width="13.2" height="13.2" rx="0.6" />
-        <path d="M6.2 10.8h13.2M12.8 4.2v13.2" strokeWidth={1.15} opacity={0.42} />
-        <circle cx="12.8" cy="10.8" r="0.75" fill="currentColor" stroke="none" />
-        <rect x="4.55" y="2.55" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="11.25" y="2.55" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="17.95" y="2.55" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="4.55" y="9.25" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="17.95" y="9.25" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="4.55" y="15.95" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="11.25" y="15.95" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <rect x="17.95" y="15.95" width="3.1" height="3.1" fill="currentColor" stroke="none" />
-        <polygon
-          points="2 22 2 15.6 3.45 17.15 6.05 20.1 7.45 19.25 4.7 16.15 8.35 15.7"
-          fill="currentColor"
-          stroke="none"
-        />
+        <rect x="2" y="2" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+        <rect x="16.5" y="2" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+        <rect x="2" y="16.5" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+        <rect x="16.5" y="16.5" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+        <line x1="7.5" y1="4.75" x2="16.5" y2="4.75" strokeWidth={2.65} />
+        <line x1="7.5" y1="19.25" x2="16.5" y2="19.25" strokeWidth={2.65} />
+        <line x1="4.75" y1="7.5" x2="4.75" y2="16.5" strokeWidth={2.65} />
+        <line x1="19.25" y1="7.5" x2="19.25" y2="16.5" strokeWidth={2.65} />
       </>
     ),
     move: (

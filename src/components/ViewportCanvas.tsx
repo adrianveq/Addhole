@@ -284,7 +284,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       >
       startAngle: number
       scaleDrag: null | {
-        kind: "corner" | "face"
+        kind: "corner" | "face" | "center"
         handleId: string
         sign: THREE.Vector3
         center: THREE.Vector3
@@ -292,7 +292,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         hx: number
         hy: number
         hz: number
+        pullLocal?: THREE.Vector3
       }
+      moveAxis: THREE.Vector3 | null
       rotBasis: null | { axis: THREE.Vector3; xDir: THREE.Vector3; yDir: THREE.Vector3 }
     } = null
 
@@ -412,6 +414,27 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const curSelIds: string[] = sceneRef.current?.selectedIds || []
       const primaryId = curSelIds[curSelIds.length - 1] || null
 
+      const planeAlong = (origin: THREE.Vector3, dir: THREE.Vector3) => {
+        const toCam = activeCam.position.clone().sub(origin)
+        const planeN = toCam.clone().addScaledVector(dir, -toCam.dot(dir))
+        if (planeN.lengthSq() < 1e-6) {
+          const fallback =
+            Math.abs(dir.z) < 0.85 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)
+          planeN.crossVectors(dir, fallback)
+        }
+        if (planeN.lengthSq() < 1e-6) planeN.set(0, 1, 0)
+        return planeN.normalize()
+      }
+
+      const basisOf = (quat: THREE.Quaternion) => {
+        const axisOf = (x: number, y: number, z: number) =>
+          new THREE.Vector3(x, y, z).applyQuaternion(quat).normalize()
+        const xAxis = axisOf(1, 0, 0)
+        const yAxis = axisOf(0, 1, 0)
+        const zAxis = axisOf(0, 0, 1)
+        return { xAxis, yAxis, zAxis }
+      }
+
       const startAxisDrag = (
         axis: string,
         pivot: THREE.Vector3,
@@ -420,6 +443,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           planeNormal?: THREE.Vector3
           scaleDrag?: NonNullable<typeof activeDrag>["scaleDrag"]
           rotBasis?: NonNullable<typeof activeDrag>["rotBasis"]
+          moveAxis?: THREE.Vector3
         }
       ) => {
         if (!meshMap.get(id)) return false
@@ -456,6 +480,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           startTransforms: captureStartTransforms(curSelIds),
           startAngle,
           scaleDrag: opts?.scaleDrag ?? null,
+          moveAxis: opts?.moveAxis?.clone() ?? null,
           rotBasis: basis ?? null,
         }
         return true
@@ -528,8 +553,22 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
             ) {
               return
             }
-          } else if (startAxisDrag(axis, transformRig.root.position, primaryId)) {
-            return
+          } else if (axis === "mz") {
+            const frame = transformRig.getFrame()
+            transformRig.root.updateMatrixWorld(true)
+            const camLocal = transformRig.root.worldToLocal(activeCam.position.clone())
+            const signZ = camLocal.z >= 0 ? 1 : -1
+            const moveAxis = new THREE.Vector3(0, 0, signZ)
+              .applyQuaternion(frame.quaternion)
+              .normalize()
+            if (
+              startAxisDrag(axis, frame.center, primaryId, {
+                planeNormal: planeAlong(frame.center, moveAxis),
+                moveAxis,
+              })
+            ) {
+              return
+            }
           }
         }
       }
@@ -541,15 +580,82 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           true
         )
         const axisHit = gHits.find((h) => h.object.userData?.gizmoAxis)
-        if (
-          axisHit &&
-          startAxisDrag(
-            axisHit.object.userData.gizmoAxis as string,
-            gizmoCtrl.root.position,
-            primaryId
-          )
-        ) {
-          return
+        if (axisHit) {
+          const axis = axisHit.object.userData.gizmoAxis as string
+          const frame = transformRig.getFrame()
+          const { xAxis, yAxis, zAxis } = basisOf(frame.quaternion)
+          if (mode === "scale") {
+            const sign =
+              axis === "sx"
+                ? { x: 1, y: 0, z: 0 }
+                : axis === "sy"
+                  ? { x: 0, y: 1, z: 0 }
+                  : axis === "sz"
+                    ? { x: 0, y: 0, z: 1 }
+                    : { x: 0, y: 0, z: 0 }
+            const handleDir =
+              axis === "sx" ? xAxis : axis === "sy" ? yAxis : axis === "sz" ? zAxis : null
+            let pullLocal: THREE.Vector3 | undefined
+            let planeN: THREE.Vector3
+            if (!handleDir) {
+              planeN = activeCam.position.clone().sub(frame.center)
+              if (planeN.lengthSq() < 1e-8) planeN.set(0, 0, 1)
+              else planeN.normalize()
+              const right = new THREE.Vector3(1, 0, 0).applyQuaternion(activeCam.quaternion)
+              const up = new THREE.Vector3(0, 1, 0).applyQuaternion(activeCam.quaternion)
+              pullLocal = right
+                .add(up)
+                .normalize()
+                .applyQuaternion(frame.quaternion.clone().invert())
+              if (pullLocal.lengthSq() < 1e-8) pullLocal.set(0, 0, 1)
+              else pullLocal.normalize()
+            } else {
+              planeN = planeAlong(frame.center, handleDir)
+            }
+            if (
+              startAxisDrag(axis, frame.center, primaryId, {
+                planeNormal: planeN,
+                scaleDrag: {
+                  kind: handleDir ? "face" : "center",
+                  handleId: axis,
+                  sign: new THREE.Vector3(sign.x, sign.y, sign.z),
+                  center: frame.center.clone(),
+                  quat: frame.quaternion.clone(),
+                  hx: frame.hx,
+                  hy: frame.hy,
+                  hz: frame.hz,
+                  pullLocal,
+                },
+              })
+            ) {
+              return
+            }
+          } else if (axis === "rx" || axis === "ry" || axis === "rz") {
+            const basis =
+              axis === "rx"
+                ? { axis: xAxis, xDir: yAxis, yDir: zAxis }
+                : axis === "ry"
+                  ? { axis: yAxis, xDir: zAxis, yDir: xAxis }
+                  : { axis: zAxis, xDir: xAxis, yDir: yAxis }
+            if (
+              startAxisDrag(axis, frame.center, primaryId, {
+                planeNormal: basis.axis.clone(),
+                rotBasis: basis,
+              })
+            ) {
+              return
+            }
+          } else if (axis === "mx" || axis === "my" || axis === "mz") {
+            const moveAxis = axis === "mx" ? xAxis : axis === "my" ? yAxis : zAxis
+            if (
+              startAxisDrag(axis, frame.center, primaryId, {
+                planeNormal: planeAlong(frame.center, moveAxis),
+                moveAxis,
+              })
+            ) {
+              return
+            }
+          }
         }
       }
 
@@ -592,6 +698,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               startTransforms: captureStartTransforms(nextSel),
               startAngle: 0,
               scaleDrag: null,
+              moveAxis: null,
               rotBasis: null,
             }
           }
@@ -748,8 +855,6 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         axis,
         pivotWorld,
         startHit,
-        startScreenX,
-        startScreenY,
         startTransforms,
         startAngle,
       } = activeDrag
@@ -757,101 +862,74 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const doCommit = commitRef.current
 
       if (activeDrag.scaleDrag) {
-        const { kind, sign, center, quat, hx, hy, hz } = activeDrag.scaleDrag
+        const { kind, sign, center, quat, hx, hy, hz, pullLocal } = activeDrag.scaleDrag
         if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return
         const localDelta = hitPt.clone().sub(startHit).applyQuaternion(quat.clone().invert())
-        const { fx, fy, fz, anchor } = rigScaleFactors(
-          kind,
-          sign,
-          { x: hx, y: hy, z: hz },
-          localDelta,
-          e.shiftKey,
-          e.ctrlKey || e.altKey || e.metaKey
-        )
-        const anchorWorld = anchor.applyQuaternion(quat).add(center)
-        const qInv = quat.clone().invert()
+        const onScaleGizmo =
+          activeDrag.scaleDrag.handleId === "sx" ||
+          activeDrag.scaleDrag.handleId === "sy" ||
+          activeDrag.scaleDrag.handleId === "sz" ||
+          activeDrag.scaleDrag.handleId === "sall"
+        const symmetric = onScaleGizmo || e.ctrlKey || e.altKey || e.metaKey
+        const scaled =
+          kind === "center"
+            ? rigScaleFactors(
+                "face",
+                { x: 1, y: 0, z: 0 },
+                {
+                  x: Math.max(hx, hy, hz),
+                  y: Math.max(hx, hy, hz),
+                  z: Math.max(hx, hy, hz),
+                },
+                new THREE.Vector3(localDelta.dot(pullLocal ?? new THREE.Vector3(0, 0, 1)), 0, 0),
+                true,
+                true
+              )
+            : rigScaleFactors(
+                kind,
+                sign,
+                { x: hx, y: hy, z: hz },
+                localDelta,
+                e.shiftKey,
+                symmetric
+              )
+        const { fx, fy, fz } = scaled
+        const anchorWorld = scaled.anchor.clone().applyQuaternion(quat).add(center)
         doCommit(
           (prev) =>
             prev.map((o) => {
               const st = startTransforms[o.id]
               if (!st) return o
-              const rel = new THREE.Vector3(st.pos.x * 10, st.pos.y * 10, st.pos.z * 10).sub(
-                anchorWorld
+              return scaleObjectAboutAnchor(
+                { ...o, pos: st.pos, rot: st.rot, scale: { ...st.scale } },
+                fx,
+                fy,
+                fz,
+                anchorWorld,
+                quat
               )
-              rel.applyQuaternion(qInv)
-              rel.x *= fx
-              rel.y *= fy
-              rel.z *= fz
-              rel.applyQuaternion(quat)
-              const next = anchorWorld.clone().add(rel)
-              return {
-                ...o,
-                pos: {
-                  x: Number((next.x / 10).toFixed(2)),
-                  y: Number((next.y / 10).toFixed(2)),
-                  z: Number((next.z / 10).toFixed(2)),
-                },
-                scale: {
-                  sx: Number((st.scale.sx * fx).toFixed(3)),
-                  sy: Number((st.scale.sy * fy).toFixed(3)),
-                  sz: Number((st.scale.sz * fz).toFixed(3)),
-                },
-              }
             }),
           false
         )
         return
       }
 
-      if (axis === "mz") {
-        const dz = (startScreenY - e.clientY) * 0.045
-        doCommit(
-          (prev) =>
-            prev.map((o) =>
-              startTransforms[o.id]
-                ? {
-                    ...o,
-                    pos: {
-                      ...o.pos,
-                      z: Number((startTransforms[o.id].pos.z + dz).toFixed(2)),
-                    },
-                  }
-                : o
-            ),
-          false
-        )
-        return
-      }
-
-      if (axis === "sz" || axis === "sall") {
-        const delta =
-          (startScreenY - e.clientY) * 0.008 +
-          (axis === "sall" ? (e.clientX - startScreenX) * 0.008 : 0)
-        const factor = Math.max(0.05, 1 + delta)
-        const sxF = axis === "sall" ? factor : 1
-        const syF = axis === "sall" ? factor : 1
-        const szF = factor
+      if (activeDrag.moveAxis) {
+        if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return
+        const alongCm =
+          (hitPt.clone().sub(startHit).dot(activeDrag.moveAxis) / 10) * moveDamping
+        const delta = activeDrag.moveAxis.clone().multiplyScalar(alongCm)
         doCommit(
           (prev) =>
             prev.map((o) => {
               const st = startTransforms[o.id]
               if (!st) return o
-              const offsetMm = new THREE.Vector3(
-                (st.pos.x * 10 - pivotWorld.x) * sxF,
-                (st.pos.y * 10 - pivotWorld.y) * syF,
-                (st.pos.z * 10 - pivotWorld.z) * szF
-              )
               return {
                 ...o,
                 pos: {
-                  x: Number(((pivotWorld.x + offsetMm.x) / 10).toFixed(2)),
-                  y: Number(((pivotWorld.y + offsetMm.y) / 10).toFixed(2)),
-                  z: Number(((pivotWorld.z + offsetMm.z) / 10).toFixed(2)),
-                },
-                scale: {
-                  sx: Number((st.scale.sx * sxF).toFixed(3)),
-                  sy: Number((st.scale.sy * syF).toFixed(3)),
-                  sz: Number((st.scale.sz * szF).toFixed(3)),
+                  x: Number((st.pos.x + delta.x).toFixed(2)),
+                  y: Number((st.pos.y + delta.y).toFixed(2)),
+                  z: Number((st.pos.z + delta.z).toFixed(2)),
                 },
               }
             }),
@@ -880,57 +958,6 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
                   }
                 : o
             ),
-          false
-        )
-      } else if (axis === "mx" || axis === "my") {
-        const k = axis === "mx" ? "x" : "y"
-        const d =
-          ((axis === "mx" ? hitPt.x - startHit.x : hitPt.y - startHit.y) / 10) *
-          moveDamping
-        doCommit(
-          (prev) =>
-            prev.map((o) =>
-              startTransforms[o.id]
-                ? {
-                    ...o,
-                    pos: {
-                      ...o.pos,
-                      [k]: Number((startTransforms[o.id].pos[k] + d).toFixed(2)),
-                    },
-                  }
-                : o
-            ),
-          false
-        )
-      } else if (axis === "sx" || axis === "sy") {
-        const dMm = axis === "sx" ? hitPt.x - startHit.x : hitPt.y - startHit.y
-        const factor = Math.max(0.05, 1 + dMm / 30)
-        const sxF = axis === "sx" ? factor : 1
-        const syF = axis === "sy" ? factor : 1
-        doCommit(
-          (prev) =>
-            prev.map((o) => {
-              const st = startTransforms[o.id]
-              if (!st) return o
-              const offsetMm = new THREE.Vector3(
-                (st.pos.x * 10 - pivotWorld.x) * sxF,
-                (st.pos.y * 10 - pivotWorld.y) * syF,
-                st.pos.z * 10 - pivotWorld.z
-              )
-              return {
-                ...o,
-                pos: {
-                  x: Number(((pivotWorld.x + offsetMm.x) / 10).toFixed(2)),
-                  y: Number(((pivotWorld.y + offsetMm.y) / 10).toFixed(2)),
-                  z: st.pos.z,
-                },
-                scale: {
-                  sx: Number((st.scale.sx * sxF).toFixed(3)),
-                  sy: Number((st.scale.sy * syF).toFixed(3)),
-                  sz: st.scale.sz,
-                },
-              }
-            }),
           false
         )
       } else if (axis === "rx" || axis === "ry" || axis === "rz") {
@@ -1671,8 +1698,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       if (primaryMesh) selectedMeshes.push(primaryMesh)
       st.transformRig.setTargets(selectedMeshes)
       if (hasValid && !combinedBox.isEmpty()) {
-        st.gizmoCtrl.root.position.copy(combinedBox.getCenter(new THREE.Vector3()))
         const showTransform = st.toolMode === "transform"
+        const frame = st.transformRig.getFrame()
+        st.gizmoCtrl.root.position.copy(frame.center)
+        st.gizmoCtrl.root.quaternion.copy(frame.quaternion)
         st.gizmoCtrl.root.visible = !showTransform
         st.transformRig.setVisible(showTransform)
       } else {
