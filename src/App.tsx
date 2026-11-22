@@ -48,7 +48,16 @@ import {
   simplifyBufferGeometry,
   splitGeometryIntoParts,
 } from "./three/geometryOps"
-import { createThemeHelpers } from "./styles/uiStyles"
+import {
+  clearStoredUiTheme,
+  createThemeHelpers,
+  DEFAULT_UI_THEME,
+  hexToRgba,
+  lightenHex,
+  readStoredUiTheme,
+  UiTheme,
+  writeStoredUiTheme,
+} from "./styles/uiStyles"
 import { Icon } from "./components/Icon"
 import { ViewportCanvas } from "./components/ViewportCanvas"
 import { ContextMenu } from "./components/ContextMenu"
@@ -122,11 +131,40 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     style,
   } = props
 
-  const accent = colors?.accentColor || "#0D9488"
-  const accentBorder = colors?.accentBorder || "#14B8A6"
-  const bgHex = colors?.bgColor || "#0F172A"
+  const baseTheme = React.useMemo<UiTheme>(
+    () => ({
+      accent: colors?.accentColor || DEFAULT_UI_THEME.accent,
+      background: colors?.bgColor || DEFAULT_UI_THEME.background,
+      surface: DEFAULT_UI_THEME.surface,
+    }),
+    [colors?.accentColor, colors?.bgColor]
+  )
+  const [uiTheme, setUiTheme] = React.useState<UiTheme>(() => ({
+    ...baseTheme,
+    ...readStoredUiTheme(),
+  }))
+  const accent = uiTheme.accent
+  const accentBorder =
+    accent.toLowerCase() === baseTheme.accent.toLowerCase()
+      ? colors?.accentBorder || lightenHex(accent, 0.28)
+      : lightenHex(accent, 0.28)
+  const bgHex = uiTheme.background
+  const surfaceHex = uiTheme.surface
   const defaultModelHex = colors?.modelColor || "#E2E8F0"
   const radius = Math.max(0, Number(colors?.borderRadius ?? 8))
+
+  const patchUiTheme = React.useCallback((patch: Partial<UiTheme>) => {
+    setUiTheme((prev) => {
+      const next = { ...prev, ...patch }
+      writeStoredUiTheme(next)
+      return next
+    })
+  }, [])
+
+  const resetUiTheme = React.useCallback(() => {
+    clearStoredUiTheme()
+    setUiTheme(baseTheme)
+  }, [baseTheme])
 
   const {
     rSm,
@@ -136,8 +174,8 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     contextualBtnStyle,
     ctxMenuItemStyle,
   } = React.useMemo(
-    () => createThemeHelpers(accent, accentBorder, radius),
-    [accent, accentBorder, radius]
+    () => createThemeHelpers(accent, accentBorder, radius, surfaceHex),
+    [accent, accentBorder, radius, surfaceHex]
   )
 
   const svgLongCm = Math.max(1, Number(svgDefaults?.longestSideCm ?? 10))
@@ -1475,6 +1513,43 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     setTimeout(() => setSavedBadge(false), 1600)
   }
 
+  const clearProject = React.useCallback(() => {
+    historyRef.current = { past: [], future: [] }
+    objectsRef.current = []
+    selectedIdsRef.current = []
+    editingGroupStateRef.current = null
+    setObjects([])
+    setSelectedIds([])
+    setEditingGroupState(null)
+    setColorPopoverId(null)
+    setContextMenu(null)
+    setLayOnFaceMode(false)
+    setRenamingId(null)
+    syncHistFlags()
+    saveAutosaveToIdb(serializeProjectPayload([], gridSizeCm, gridStepCm))
+  }, [gridSizeCm, gridStepCm, syncHistFlags])
+
+  const requestNewProject = React.useCallback(() => {
+    const hasWork =
+      objectsRef.current.some((o) => !o.isGhostContext) ||
+      historyRef.current.past.length > 0 ||
+      historyRef.current.future.length > 0
+    if (!hasWork) {
+      clearProject()
+      return
+    }
+    setConfirmDialog({
+      title: "New Project",
+      message:
+        "This scene already has changes. Start a new project and discard them?",
+      confirmLabel: "New Project",
+      onConfirm: () => {
+        clearProject()
+        setConfirmDialog(null)
+      },
+    })
+  }, [clearProject])
+
   // Load initialModel URL if provided
   React.useEffect(() => {
     const url = initialModel?.file
@@ -2091,8 +2166,8 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
             borderRadius: radius,
             border: `2px dashed ${isDragOver ? accentBorder : "rgba(255,255,255,0.28)"}`,
             backgroundColor: isDragOver
-              ? "rgba(13, 148, 136, 0.24)"
-              : "rgba(15, 23, 42, 0.76)",
+              ? hexToRgba(accent, 0.24)
+              : hexToRgba(surfaceHex, 0.76),
             backdropFilter: "blur(6px)",
             textAlign: "center",
             cursor: "pointer",
@@ -2128,7 +2203,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
             inset: 10,
             borderRadius: radius,
             border: `2px dashed ${accentBorder}`,
-            backgroundColor: "rgba(13, 148, 136, 0.16)",
+            backgroundColor: hexToRgba(accent, 0.16),
             pointerEvents: "none",
             zIndex: 35,
           }}
@@ -2145,6 +2220,13 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         accentBorder={accentBorder}
         sqToolBtn={sqToolBtn}
         setAboutModalOpen={setAboutModalOpen}
+        onNewProject={requestNewProject}
+        onSaveProject={handleSaveProjectFile}
+        onExport={handleExportStl}
+        canSaveProject={objects.length > 0}
+        uiTheme={uiTheme}
+        onChangeUiTheme={patchUiTheme}
+        onResetUiTheme={resetUiTheme}
         onTriggerFileInput={() => fileInputRef.current?.click()}
         importButtonLabel={texts?.importButtonLabel}
         addMenuOpen={addMenuOpen}

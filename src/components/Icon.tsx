@@ -465,6 +465,30 @@ export function Icon({
         <path d="M14 16l2-3 2 3" />
       </>
     ),
+    filePlus: (
+      <>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="12" y1="18" x2="12" y2="12" />
+        <line x1="9" y1="15" x2="15" y2="15" />
+      </>
+    ),
+    info: (
+      <>
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+      </>
+    ),
+    palette: (
+      <>
+        <path d="M12 3a9 9 0 1 0 0 18h1.2a1.8 1.8 0 0 0 1.3-3.05 1.6 1.6 0 0 1 .35-2.45A1.7 1.7 0 0 0 16 14h1a4 4 0 0 0 4-4 7 7 0 0 0-9-7z" />
+        <circle cx="7.5" cy="10" r="1" fill="currentColor" stroke="none" />
+        <circle cx="10.5" cy="7.2" r="1" fill="currentColor" stroke="none" />
+        <circle cx="14.2" cy="7.5" r="1" fill="currentColor" stroke="none" />
+        <circle cx="16.2" cy="11" r="1" fill="currentColor" stroke="none" />
+      </>
+    ),
     x: (
       <>
         <line x1="18" y1="6" x2="6" y2="18" />

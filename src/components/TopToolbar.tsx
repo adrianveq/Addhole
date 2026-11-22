@@ -2,7 +2,7 @@ import * as React from "react"
 import * as THREE from "three"
 import { APP_VERSION, PALETTE } from "../constants/editorConfig"
 import { EditingGroupState, SceneObject } from "../types/editor"
-import { iconBtn } from "../styles/uiStyles"
+import { iconBtn, UiTheme } from "../styles/uiStyles"
 import { Icon, SwatchCircle } from "./Icon"
 
 export function TopToolbar({
@@ -14,6 +14,13 @@ export function TopToolbar({
   accentBorder,
   sqToolBtn,
   setAboutModalOpen,
+  onNewProject,
+  onSaveProject,
+  onExport,
+  canSaveProject,
+  uiTheme,
+  onChangeUiTheme,
+  onResetUiTheme,
   onTriggerFileInput,
   importButtonLabel,
   addMenuOpen,
@@ -59,6 +66,13 @@ export function TopToolbar({
   accentBorder: string
   sqToolBtn: (active?: boolean) => React.CSSProperties
   setAboutModalOpen: React.Dispatch<React.SetStateAction<boolean>>
+  onNewProject: () => void
+  onSaveProject: () => void
+  onExport: () => void
+  canSaveProject: boolean
+  uiTheme: UiTheme
+  onChangeUiTheme: (patch: Partial<UiTheme>) => void
+  onResetUiTheme: () => void
   onTriggerFileInput: () => void
   importButtonLabel?: string
   addMenuOpen: boolean
@@ -96,6 +110,59 @@ export function TopToolbar({
   moveObjectInList: (id: string, direction: -1 | 1) => void
   requestDeleteObjects: (ids: string[]) => void
 }) {
+  const [mainMenuOpen, setMainMenuOpen] = React.useState(false)
+  const mainMenuRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    if (!mainMenuOpen) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (!mainMenuRef.current?.contains(event.target as Node)) {
+        setMainMenuOpen(false)
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown)
+    return () => window.removeEventListener("pointerdown", onPointerDown)
+  }, [mainMenuOpen])
+
+  const closeMenu = () => setMainMenuOpen(false)
+
+  const menuItem = (
+    label: string,
+    icon: string,
+    onClick: () => void,
+    disabled = false
+  ) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        if (disabled) return
+        closeMenu()
+        onClick()
+      }}
+      style={{
+        width: "100%",
+        padding: "7px 10px",
+        borderRadius: Math.min(5, rSm),
+        border: "none",
+        background: "transparent",
+        color: "#F8FAFC",
+        fontSize: 12.5,
+        fontWeight: 600,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        cursor: disabled ? "not-allowed" : "pointer",
+        textAlign: "left",
+        opacity: disabled ? 0.4 : 1,
+      }}
+      className="adivi-ctx-btn"
+    >
+      <Icon name={icon} size={14} />
+      <span>{label}</span>
+    </button>
+  )
+
   return (
     <div
       style={{
@@ -118,14 +185,162 @@ export function TopToolbar({
           flexWrap: "wrap",
         }}
       >
-        <button
-          type="button"
-          title={`ADIVI 3D Studio (${APP_VERSION}) — About`}
-          onClick={() => setAboutModalOpen(true)}
-          style={sqToolBtn(false)}
-        >
-          <Icon name="brand" size={17} accent={accentBorder} />
-        </button>
+        <div ref={mainMenuRef} style={{ position: "relative", flexShrink: 0 }}>
+          <button
+            type="button"
+            title="Menu"
+            onClick={() => setMainMenuOpen((open) => !open)}
+            style={sqToolBtn(mainMenuOpen)}
+          >
+            <Icon name="brand" size={17} accent={mainMenuOpen ? "#FFFFFF" : accentBorder} />
+          </button>
+          {mainMenuOpen && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                ...glass,
+                position: "absolute",
+                top: 40,
+                left: 0,
+                width: 228,
+                borderRadius: rSm,
+                padding: 5,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+                zIndex: 40,
+                boxShadow: "0 12px 28px rgba(0,0,0,0.45)",
+              }}
+            >
+              {menuItem("New Project", "filePlus", onNewProject)}
+              {menuItem("Load", "upload", onTriggerFileInput)}
+              {menuItem("Save", "save", onSaveProject, !canSaveProject)}
+              {menuItem("Export STL", "download", onExport, !canSaveProject)}
+
+              <div
+                style={{
+                  height: 1,
+                  margin: "4px 6px",
+                  backgroundColor: "rgba(255,255,255,0.1)",
+                }}
+              />
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "4px 10px 2px",
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    color: "#94A3B8",
+                    letterSpacing: 0.2,
+                  }}
+                >
+                  <Icon name="palette" size={14} />
+                  Colors
+                </span>
+                <button
+                  type="button"
+                  onClick={onResetUiTheme}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: accentBorder,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+              {(
+                [
+                  ["Accent", "accent"],
+                  ["Background", "background"],
+                  ["Panels", "surface"],
+                ] as const
+              ).map(([label, key]) => (
+                <label
+                  key={key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    padding: "5px 10px",
+                    borderRadius: Math.min(5, rSm),
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                  className="adivi-ctx-btn"
+                >
+                  <span>{label}</span>
+                  <span
+                    style={{
+                      position: "relative",
+                      width: 18,
+                      height: 18,
+                      borderRadius: 99,
+                      backgroundColor: uiTheme[key],
+                      backgroundImage: `linear-gradient(${uiTheme[key]}, ${uiTheme[key]}), conic-gradient(#cbd5e1 90deg, #334155 0 180deg, #cbd5e1 0 270deg, #334155 0)`,
+                      backgroundSize: "auto, 8px 8px",
+                      border: "1.5px solid rgba(255,255,255,0.75)",
+                      overflow: "hidden",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <input
+                      type="color"
+                      aria-label={label}
+                      value={uiTheme[key]}
+                      onChange={(e) => onChangeUiTheme({ [key]: e.target.value })}
+                      style={{
+                        position: "absolute",
+                        inset: -6,
+                        width: 32,
+                        height: 32,
+                        opacity: 0,
+                        cursor: "pointer",
+                        border: "none",
+                        padding: 0,
+                      }}
+                    />
+                  </span>
+                </label>
+              ))}
+
+              <div
+                style={{
+                  height: 1,
+                  margin: "4px 6px",
+                  backgroundColor: "rgba(255,255,255,0.1)",
+                }}
+              />
+              {menuItem("Info", "info", () => setAboutModalOpen(true))}
+              <div
+                style={{
+                  padding: "0 10px 4px",
+                  fontSize: 10.5,
+                  color: "#64748B",
+                  fontWeight: 600,
+                }}
+              >
+                ADIVI 3D Studio {APP_VERSION}
+              </div>
+            </div>
+          )}
+        </div>
 
         <button
           type="button"

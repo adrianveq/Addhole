@@ -64,11 +64,90 @@ export const inp: React.CSSProperties = {
   boxSizing: "border-box",
 }
 
-export function createThemeHelpers(accent: string, accentBorder: string, radius: number) {
+export const DEFAULT_UI_THEME = {
+  accent: "#0D9488",
+  background: "#0F172A",
+  surface: "#0F172A",
+}
+
+export type UiTheme = {
+  accent: string
+  background: string
+  surface: string
+}
+
+const THEME_STORAGE_KEY = "adivi-ui-colors"
+
+function expandHex(hex: string): string | null {
+  const n = hex.trim().replace("#", "")
+  const full = n.length === 3 ? n.split("").map((c) => c + c).join("") : n
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return null
+  return full.toLowerCase()
+}
+
+export function hexToRgba(hex: string, alpha: number): string {
+  const full = expandHex(hex)
+  if (!full) return `rgba(15, 23, 42, ${alpha})`
+  const r = parseInt(full.slice(0, 2), 16)
+  const g = parseInt(full.slice(2, 4), 16)
+  const b = parseInt(full.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+export function lightenHex(hex: string, amount: number): string {
+  const full = expandHex(hex)
+  if (!full) return "#14B8A6"
+  const mix = (channel: number) =>
+    Math.round(channel + (255 - channel) * amount)
+      .toString(16)
+      .padStart(2, "0")
+  return `#${mix(parseInt(full.slice(0, 2), 16))}${mix(parseInt(full.slice(2, 4), 16))}${mix(parseInt(full.slice(4, 6), 16))}`
+}
+
+export function readStoredUiTheme(): Partial<UiTheme> {
+  try {
+    const raw = localStorage.getItem(THEME_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Partial<UiTheme>
+    const next: Partial<UiTheme> = {}
+    if (parsed.accent && expandHex(parsed.accent)) next.accent = `#${expandHex(parsed.accent)}`
+    if (parsed.background && expandHex(parsed.background)) {
+      next.background = `#${expandHex(parsed.background)}`
+    }
+    if (parsed.surface && expandHex(parsed.surface)) next.surface = `#${expandHex(parsed.surface)}`
+    return next
+  } catch {
+    return {}
+  }
+}
+
+export function writeStoredUiTheme(theme: UiTheme): void {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme))
+  } catch {
+    // Ignore private-mode storage failures
+  }
+}
+
+export function clearStoredUiTheme(): void {
+  try {
+    localStorage.removeItem(THEME_STORAGE_KEY)
+  } catch {
+    // Ignore private-mode storage failures
+  }
+}
+
+export function createThemeHelpers(
+  accent: string,
+  accentBorder: string,
+  radius: number,
+  surface = DEFAULT_UI_THEME.surface
+) {
   const rSm = Math.max(0, radius - 2)
+  const surfaceFill = hexToRgba(surface, 0.88)
 
   const glass: React.CSSProperties = {
-    backgroundColor: "rgba(15, 23, 42, 0.86)",
+    backgroundColor: surfaceFill,
     backdropFilter: "blur(8px)",
     border: "1px solid rgba(255,255,255,0.16)",
     color: "#F8FAFC",
@@ -106,7 +185,7 @@ export function createThemeHelpers(accent: string, accentBorder: string, radius:
   })
 
   const contextualBtnStyle = (active = false): React.CSSProperties => ({
-    backgroundColor: active ? accent : "rgba(15, 23, 42, 0.86)",
+    backgroundColor: active ? accent : surfaceFill,
     backdropFilter: "blur(8px)",
     border: `1px solid ${active ? accentBorder : "rgba(255,255,255,0.14)"}`,
     color: active ? "#FFFFFF" : "#E2E8F0",
