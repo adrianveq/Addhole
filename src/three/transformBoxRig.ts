@@ -41,6 +41,8 @@ export interface TransformBoxRig {
   getPlanarFaceCallout: (handleId: string) => PlanarFaceCallout | null
   /** World-space tip of the blue vertical move arrow (for on-screen label). */
   getMoveZTipWorld: () => THREE.Vector3 | null
+  /** World-space point on a rotation arc (for on-screen label). */
+  getRotateAxisTipWorld: (axis: "rx" | "ry" | "rz") => THREE.Vector3 | null
   update: (camera: THREE.Camera) => void
   dispose: () => void
 }
@@ -882,6 +884,20 @@ export function createTransformBoxRig(): TransformBoxRig {
       arrow.updateMatrixWorld(true)
       const tip = new THREE.Vector3(0, Z_SHAFT + Z_HEAD * 0.95, 0)
       arrow.localToWorld(tip)
+      return tip
+    },
+    getRotateAxisTipWorld: (axis) => {
+      if (targets.length === 0) return null
+      const arc = arcs.find((item) => item.axis === axis)
+      if (!arc) return null
+      arc.group.updateMatrixWorld(true)
+      const midAngle = (ARC_START + ARC_END) * 0.5
+      const tip = new THREE.Vector3(
+        Math.cos(midAngle) * ARC_RADIUS,
+        Math.sin(midAngle) * ARC_RADIUS,
+        0
+      )
+      arc.group.localToWorld(tip)
       return tip
     },
     update: (camera) => {
