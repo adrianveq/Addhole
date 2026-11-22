@@ -230,6 +230,14 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         }
       >
       startAngle: number
+      scaleDrag: null | {
+        sign: THREE.Vector3
+        dir: THREE.Vector3
+        anchor: THREE.Vector3
+        span: number
+        quat: THREE.Quaternion
+      }
+      rotBasis: null | { axis: THREE.Vector3; xDir: THREE.Vector3; yDir: THREE.Vector3 }
     } = null
 
     let marqueeState: null | {
@@ -350,20 +358,35 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const curSelIds: string[] = sceneRef.current?.selectedIds || []
       const primaryId = curSelIds[curSelIds.length - 1] || null
 
-      const startAxisDrag = (axis: string, pivot: THREE.Vector3, id: string) => {
+      const startAxisDrag = (
+        axis: string,
+        pivot: THREE.Vector3,
+        id: string,
+        opts?: {
+          planeNormal?: THREE.Vector3
+          scaleDrag?: NonNullable<typeof activeDrag>["scaleDrag"]
+          rotBasis?: NonNullable<typeof activeDrag>["rotBasis"]
+        }
+      ) => {
         if (!meshMap.get(id)) return false
         controls.enabled = false
         setIsTurntable(false)
         const normal =
-          axis === "rx"
+          opts?.planeNormal ??
+          (axis === "rx"
             ? new THREE.Vector3(1, 0, 0)
             : axis === "ry"
               ? new THREE.Vector3(0, 1, 0)
-              : new THREE.Vector3(0, 0, 1)
+              : new THREE.Vector3(0, 0, 1))
         dragPlane.setFromNormalAndCoplanarPoint(normal, pivot)
         raycaster.ray.intersectPlane(dragPlane, hitPt)
-        const startAngle =
-          axis === "rx"
+        const basis = opts?.rotBasis
+        const startAngle = basis
+          ? Math.atan2(
+              hitPt.clone().sub(pivot).dot(basis.yDir),
+              hitPt.clone().sub(pivot).dot(basis.xDir)
+            )
+          : axis === "rx"
             ? Math.atan2(hitPt.z - pivot.z, hitPt.y - pivot.y)
             : axis === "ry"
               ? Math.atan2(hitPt.x - pivot.x, hitPt.z - pivot.z)
@@ -378,6 +401,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           startScreenY: e.clientY,
           startTransforms: captureStartTransforms(curSelIds),
           startAngle,
+          scaleDrag: opts?.scaleDrag ?? null,
+          rotBasis: basis ?? null,
         }
         return true
       }
@@ -389,11 +414,52 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       ) {
         const gHits = raycaster.intersectObjects(transformRig.getHitTargets(), false)
         const axisHit = gHits.find((h) => h.object.userData?.gizmoAxis)
-        if (
-          axisHit &&
-          startAxisDrag(axisHit.object.userData.gizmoAxis as string, transformRig.root.position, primaryId)
-        ) {
-          return
+        if (axisHit) {
+          const ud = axisHit.object.userData
+          const axis = ud.gizmoAxis as string
+          if (ud.signX !== undefined) {
+            const sign = { x: ud.signX as number, y: ud.signY as number, z: ud.signZ as number }
+            const info = transformRig.getScaleDrag(sign)
+            const toCam = activeCam.position.clone().sub(transformRig.root.position)
+            const planeN = toCam.addScaledVector(info.direction, -toCam.dot(info.direction))
+            if (planeN.lengthSq() < 1e-8) planeN.set(0, 0, 1)
+            else planeN.normalize()
+            if (
+              startAxisDrag(axis, transformRig.root.position, primaryId, {
+                planeNormal: planeN,
+                scaleDrag: {
+                  sign: new THREE.Vector3(sign.x, sign.y, sign.z),
+                  dir: info.direction,
+                  anchor: info.anchor,
+                  span: info.span,
+                  quat: info.quaternion,
+                },
+              })
+            ) {
+              return
+            }
+          } else if (axis === "rx" || axis === "ry" || axis === "rz") {
+            const local = new THREE.Vector3(
+              axis === "rx" ? 1 : 0,
+              axis === "ry" ? 1 : 0,
+              axis === "rz" ? 1 : 0
+            )
+            local.transformDirection(transformRig.root.matrixWorld)
+            const ref =
+              Math.abs(local.z) > 0.85 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
+            const xDir = new THREE.Vector3().crossVectors(ref, local).normalize()
+            const yDir = new THREE.Vector3().crossVectors(local, xDir).normalize()
+            if (
+              startAxisDrag(axis, transformRig.root.position, primaryId, {
+                planeNormal: local.clone(),
+                rotBasis: { axis: local, xDir, yDir },
+              })
+            ) {
+              return
+            }
+          } else if (startAxisDrag(axis, transformRig.root.position, primaryId)) {
+            return
+          }
         }
       }
 
@@ -454,6 +520,8 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
               startScreenY: e.clientY,
               startTransforms: captureStartTransforms(nextSel),
               startAngle: 0,
+              scaleDrag: null,
+              rotBasis: null,
             }
           }
         }
@@ -613,6 +681,45 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const moveDamping = 0.72
       const doCommit = commitRef.current
 
+      if (activeDrag.scaleDrag) {
+        const { sign, dir, anchor, span, quat } = activeDrag.scaleDrag
+        if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return
+        const delta = hitPt.clone().sub(startHit).dot(dir)
+        const factor = Math.max(0.05, (span + delta) / Math.max(span, 0.5))
+        const qInv = quat.clone().invert()
+        doCommit(
+          (prev) =>
+            prev.map((o) => {
+              const st = startTransforms[o.id]
+              if (!st) return o
+              const rel = new THREE.Vector3(st.pos.x * 10, st.pos.y * 10, st.pos.z * 10).sub(
+                anchor
+              )
+              rel.applyQuaternion(qInv)
+              if (sign.x !== 0) rel.x *= factor
+              if (sign.y !== 0) rel.y *= factor
+              if (sign.z !== 0) rel.z *= factor
+              rel.applyQuaternion(quat)
+              const next = anchor.clone().add(rel)
+              return {
+                ...o,
+                pos: {
+                  x: Number((next.x / 10).toFixed(2)),
+                  y: Number((next.y / 10).toFixed(2)),
+                  z: Number((next.z / 10).toFixed(2)),
+                },
+                scale: {
+                  sx: Number((st.scale.sx * (sign.x !== 0 ? factor : 1)).toFixed(3)),
+                  sy: Number((st.scale.sy * (sign.y !== 0 ? factor : 1)).toFixed(3)),
+                  sz: Number((st.scale.sz * (sign.z !== 0 ? factor : 1)).toFixed(3)),
+                },
+              }
+            }),
+          false
+        )
+        return
+      }
+
       if (axis === "mz") {
         const dz = (startScreenY - e.clientY) * 0.045
         doCommit(
@@ -744,8 +851,11 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           false
         )
       } else if (axis === "rx" || axis === "ry" || axis === "rz") {
-        const curAngle =
-          axis === "rx"
+        const basis = activeDrag.rotBasis
+        const offset = hitPt.clone().sub(pivotWorld)
+        const curAngle = basis
+          ? Math.atan2(offset.dot(basis.yDir), offset.dot(basis.xDir))
+          : axis === "rx"
             ? Math.atan2(hitPt.z - pivotWorld.z, hitPt.y - pivotWorld.y)
             : axis === "ry"
               ? Math.atan2(hitPt.x - pivotWorld.x, hitPt.z - pivotWorld.z)
@@ -755,8 +865,9 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           ? Math.round(rawDeltaDeg)
           : Math.round(rawDeltaDeg / 15) * 15
         const deltaRad = THREE.MathUtils.degToRad(deltaDeg)
-        const rotAxisVec =
-          axis === "rx"
+        const rotAxisVec = basis
+          ? basis.axis
+          : axis === "rx"
             ? new THREE.Vector3(1, 0, 0)
             : axis === "ry"
               ? new THREE.Vector3(0, 1, 0)
@@ -1316,7 +1427,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       let brackets = mesh.getObjectByName("sel_brackets") as
         | THREE.LineSegments
         | undefined
-      if (isSel && obj.visible) {
+      if (isSel && obj.visible && toolMode !== "transform") {
         if (!brackets) {
           obj.geometry.computeBoundingBox()
           const bb = obj.geometry.boundingBox!
@@ -1350,16 +1461,20 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     if (activeSelected.length > 0) {
       const combinedBox = new THREE.Box3()
       const selectedMeshes: THREE.Object3D[] = []
+      const primaryId = selectedIds[selectedIds.length - 1]
+      let primaryMesh: THREE.Object3D | null = null
       let hasValid = false
       for (const item of activeSelected) {
         const m = st.meshMap.get(item.id)
         if (m) {
           m.updateMatrixWorld(true)
           combinedBox.expandByObject(m)
-          selectedMeshes.push(m)
+          if (item.id === primaryId) primaryMesh = m
+          else selectedMeshes.push(m)
           hasValid = true
         }
       }
+      if (primaryMesh) selectedMeshes.push(primaryMesh)
       st.transformRig.setTargets(selectedMeshes)
       if (hasValid && !combinedBox.isEmpty()) {
         st.gizmoCtrl.root.position.copy(combinedBox.getCenter(new THREE.Vector3()))
@@ -1375,7 +1490,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       st.transformRig.setTargets([])
       st.transformRig.setVisible(false)
     }
-  }, [objects, selectedIds, showWireframe, showEdgeHighlight, accent, accentBorder])
+  }, [objects, selectedIds, showWireframe, showEdgeHighlight, accent, accentBorder, toolMode])
 
   return <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
 }
