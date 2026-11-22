@@ -78,6 +78,13 @@ export interface EditingGroupState {
   otherObjects: SceneObject[]
 }
 
+/** One undo step: objects plus whether a group is open for editing. */
+export interface EditorSnapshot {
+  objects: SceneObject[]
+  editingGroup: EditingGroupState | null
+  selectedIds: string[]
+}
+
 export interface SvgLayerInfo {
   id: string
   name: string

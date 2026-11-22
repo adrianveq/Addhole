@@ -116,20 +116,18 @@ export function ContextMenu({
       )}
       {selectedIds.length > 0 && (
         <>
-          {!editingGroupState && (
-            <button
-              type="button"
-              className="adivi-ctx-btn"
-              onClick={() => {
-                setContextMenu(null)
-                duplicateSelected()
-              }}
-              style={ctxMenuItemStyle}
-            >
-              <span>Duplicate</span>
-              <span style={{ fontSize: 11, color: "#94A3B8" }}>Ctrl+D</span>
-            </button>
-          )}
+          <button
+            type="button"
+            className="adivi-ctx-btn"
+            onClick={() => {
+              setContextMenu(null)
+              duplicateSelected()
+            }}
+            style={ctxMenuItemStyle}
+          >
+            <span>Duplicate</span>
+            <span style={{ fontSize: 11, color: "#94A3B8" }}>Ctrl+D</span>
+          </button>
           <button
             type="button"
             className="adivi-ctx-btn"

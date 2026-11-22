@@ -8,6 +8,7 @@ import {
   ConfirmDialogState,
   DimUnit,
   EditingGroupState,
+  EditorSnapshot,
   PrimitiveKind,
   SceneControllerHandle,
   SceneObject,
@@ -56,6 +57,58 @@ import { TransformBar } from "./components/TransformBar"
 import { InspectorPanel } from "./components/InspectorPanel"
 import { BottomBar } from "./components/BottomBar"
 import { EditorModals } from "./components/Modals"
+
+const HISTORY_CAP = 40
+
+type HistoryStacks = { past: EditorSnapshot[]; future: EditorSnapshot[] }
+
+function cloneSceneObject(o: SceneObject): SceneObject {
+  return {
+    ...o,
+    scale: { ...o.scale },
+    pos: { ...o.pos },
+    rot: { ...o.rot },
+    baseDim: { ...o.baseDim },
+    transformHome: o.transformHome
+      ? {
+          scale: { ...o.transformHome.scale },
+          pos: { ...o.transformHome.pos },
+          rot: { ...o.transformHome.rot },
+        }
+      : undefined,
+    geometry: o.geometry.clone(),
+    groupChildren: o.groupChildren
+      ? o.groupChildren.map((c) => ({
+          ...c,
+          geometry: c.geometry.clone(),
+        }))
+      : undefined,
+  }
+}
+
+function cloneEditingGroup(
+  state: EditingGroupState | null
+): EditingGroupState | null {
+  if (!state) return null
+  return {
+    groupId: state.groupId,
+    groupName: state.groupName,
+    children: state.children.map(cloneSceneObject),
+    otherObjects: state.otherObjects.map(cloneSceneObject),
+  }
+}
+
+function makeSnapshot(
+  objects: SceneObject[],
+  editingGroup: EditingGroupState | null,
+  selectedIds: string[]
+): EditorSnapshot {
+  return {
+    objects: objects.map(cloneSceneObject),
+    editingGroup: cloneEditingGroup(editingGroup),
+    selectedIds: [...selectedIds],
+  }
+}
 
 export function Adivi3DModelViewer(props: AdiviEditorProps) {
   const {
@@ -229,75 +282,94 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     return () => clearTimeout(timer)
   }, [objects, gridSizeCm, gridStepCm, editingGroupState])
 
-  // Undo / Redo history
-  const historyRef = React.useRef<{
-    past: SceneObject[][]
-    future: SceneObject[][]
-  }>({
-    past: [],
-    future: [],
-  })
+  // One linear history. Each step is the full editor status, including an open group.
+  const historyRef = React.useRef<HistoryStacks>({ past: [], future: [] })
+  const objectsRef = React.useRef(objects)
+  const selectedIdsRef = React.useRef(selectedIds)
+  const editingGroupStateRef = React.useRef<EditingGroupState | null>(null)
+  objectsRef.current = objects
+  selectedIdsRef.current = selectedIds
+  editingGroupStateRef.current = editingGroupState
+  const captureHistoryRef = React.useRef<() => EditorSnapshot>(() =>
+    makeSnapshot([], null, [])
+  )
+  captureHistoryRef.current = () =>
+    makeSnapshot(
+      objectsRef.current,
+      editingGroupStateRef.current,
+      selectedIdsRef.current
+    )
+
   const [histFlags, setHistFlags] = React.useState({
     canUndo: false,
     canRedo: false,
   })
-  const syncHistFlags = React.useCallback(
-    () =>
-      setHistFlags({
-        canUndo: historyRef.current.past.length > 0,
-        canRedo: historyRef.current.future.length > 0,
-      }),
-    []
+  const syncHistFlags = React.useCallback(() => {
+    setHistFlags({
+      canUndo: historyRef.current.past.length > 0,
+      canRedo: historyRef.current.future.length > 0,
+    })
+  }, [])
+
+  const pushPast = React.useCallback(
+    (snapshot: EditorSnapshot) => {
+      historyRef.current.past.push(snapshot)
+      if (historyRef.current.past.length > HISTORY_CAP) {
+        historyRef.current.past.shift()
+      }
+      historyRef.current.future = []
+      setTimeout(syncHistFlags, 0)
+    },
+    [syncHistFlags]
   )
+
+  const applySnapshot = React.useCallback((snapshot: EditorSnapshot) => {
+    objectsRef.current = snapshot.objects
+    selectedIdsRef.current = snapshot.selectedIds
+    editingGroupStateRef.current = snapshot.editingGroup
+    setObjects(snapshot.objects)
+    setSelectedIds(snapshot.selectedIds)
+    setEditingGroupState(snapshot.editingGroup)
+  }, [])
 
   const commitObjects = React.useCallback(
     (updater: (prev: SceneObject[]) => SceneObject[], recordHistory = true) => {
       setObjects((prev) => {
         const next = updater(prev)
         if (recordHistory) {
-          historyRef.current.past.push(
-            prev.map((o) => ({
-              ...o,
-              scale: { ...o.scale },
-              pos: { ...o.pos },
-              rot: { ...o.rot },
-              groupChildren: o.groupChildren
-                ? o.groupChildren.map((c) => ({
-                    ...c,
-                    geometry: c.geometry.clone(),
-                  }))
-                : undefined,
-            }))
+          pushPast(
+            makeSnapshot(
+              prev,
+              editingGroupStateRef.current,
+              selectedIdsRef.current
+            )
           )
-          if (historyRef.current.past.length > 40) historyRef.current.past.shift()
-          historyRef.current.future = []
-          setTimeout(syncHistFlags, 0)
         }
+        objectsRef.current = next
         return next
       })
     },
-    [syncHistFlags]
+    [pushPast]
   )
 
   const handleUndo = React.useCallback(() => {
     if (!historyRef.current.past.length) return
-    setObjects((cur) => {
-      const previous = historyRef.current.past.pop()!
-      historyRef.current.future.push(cur)
-      setTimeout(syncHistFlags, 0)
-      return previous
-    })
-  }, [syncHistFlags])
+    const previous = historyRef.current.past.pop()!
+    historyRef.current.future.push(captureHistoryRef.current())
+    applySnapshot(previous)
+    setTimeout(syncHistFlags, 0)
+  }, [applySnapshot, syncHistFlags])
 
   const handleRedo = React.useCallback(() => {
     if (!historyRef.current.future.length) return
-    setObjects((cur) => {
-      const next = historyRef.current.future.pop()!
-      historyRef.current.past.push(cur)
-      setTimeout(syncHistFlags, 0)
-      return next
-    })
-  }, [syncHistFlags])
+    const next = historyRef.current.future.pop()!
+    historyRef.current.past.push(captureHistoryRef.current())
+    if (historyRef.current.past.length > HISTORY_CAP) {
+      historyRef.current.past.shift()
+    }
+    applySnapshot(next)
+    setTimeout(syncHistFlags, 0)
+  }, [applySnapshot, syncHistFlags])
 
   // ========================================================================
   // GROUP ISOLATE MODE (NEVER TOUCHES CAMERA)
@@ -351,6 +423,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
       })
 
       const others = objects.filter((o) => o.id !== groupId)
+      pushPast(makeSnapshot(objects, editingGroupState, selectedIds))
       setEditingGroupState({
         groupId: grp.id,
         groupName: grp.name,
@@ -366,7 +439,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         editableChildren[initialChildIndex ?? 0] || editableChildren[0]
       setSelectedIds(targetChild ? [targetChild.id] : [])
     },
-    [editingGroupState, objects]
+    [editingGroupState, objects, selectedIds, pushPast]
   )
 
   const exitGroupIsolation = React.useCallback(
@@ -411,8 +484,16 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
       }))
 
       if (!solids.length) {
+        pushPast(
+          makeSnapshot(
+            objectsRef.current,
+            editingGroupStateRef.current,
+            selectedIdsRef.current
+          )
+        )
+        editingGroupStateRef.current = null
         setEditingGroupState(null)
-        commitObjects(() => otherObjects)
+        commitObjects(() => otherObjects, false)
         setSelectedIds(
           nextSelectedIdsAfterExit ||
             (otherObjects[0] ? [otherObjects[0].id] : [])
@@ -462,8 +543,16 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
           rot: { x: 0, y: 0, z: 0 },
         }
 
+        pushPast(
+          makeSnapshot(
+            objectsRef.current,
+            editingGroupStateRef.current,
+            selectedIdsRef.current
+          )
+        )
+        editingGroupStateRef.current = null
         setEditingGroupState(null)
-        commitObjects(() => [...otherObjects, updatedGroup])
+        commitObjects(() => [...otherObjects, updatedGroup], false)
         setSelectedIds(nextSelectedIdsAfterExit || [groupId])
       } catch (err) {
         console.error(err)
@@ -474,7 +563,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         setLoadingText("")
       }
     },
-    [editingGroupState, objects, commitObjects]
+    [editingGroupState, objects, commitObjects, pushPast]
   )
 
   const primarySelectedId = selectedIds[selectedIds.length - 1] || null
@@ -524,10 +613,9 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
           const curMinZMm = getWorldMinZMm(o)
           const nextZCm = Number((o.pos.z - curMinZMm / 10).toFixed(2))
           return { ...o, pos: { ...o.pos, z: nextZCm } }
-        }),
-      !editingGroupState
+        })
     )
-  }, [selectedIds, commitObjects, getWorldMinZMm, editingGroupState])
+  }, [selectedIds, commitObjects, getWorldMinZMm])
 
   const isScaleModified = Boolean(selectedObj && isScaleAwayFromHome(selectedObj))
   const isPosModified = Boolean(selectedObj && isPosAwayFromHome(selectedObj))
@@ -603,7 +691,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
     ) => {
       commitObjects(
         (prev) => prev.map((o) => (o.id === id ? fn(o) : o)),
-        recordHistory && !editingGroupState
+        recordHistory
       )
     },
     [commitObjects, editingGroupState]
@@ -630,7 +718,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
       const set = new Set(selectedIds)
       commitObjects(
         (prev) => prev.map((o) => (set.has(o.id) ? fn(o) : o)),
-        recordHistory && !editingGroupState
+        recordHistory
       )
     },
     [selectedIds, commitObjects, editingGroupState]
@@ -647,7 +735,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
       const [item] = copy.splice(idx, 1)
       copy.splice(targetIdx, 0, item)
       return copy
-    }, !editingGroupState)
+    })
   }
 
   const handleSimplifySelected = async () => {
@@ -700,7 +788,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
                   : []
             })
             return next
-          }, !editingGroupState)
+          })
           setConfirmDialog(null)
         },
       })
@@ -709,18 +797,24 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
   )
 
   const duplicateSelected = React.useCallback(() => {
-    if (!selectedIds.length || editingGroupState) return
-    const clones = objects
-      .filter((o) => selectedIds.includes(o.id))
-      .map((o, i) => ({
-        ...o,
-        id: uid(`dup_${i}`),
-        name: `${o.name} (Copy)`,
-        geometry: o.geometry.clone(),
-        scale: { ...o.scale },
-        pos: { ...o.pos, x: Number((o.pos.x + 1.5).toFixed(2)) },
-        rot: { ...o.rot },
-      }))
+    if (!selectedIds.length) return
+    const inGroup = Boolean(editingGroupState)
+    const sources = objects.filter(
+      (o) => selectedIds.includes(o.id) && !o.isGhostContext
+    )
+    if (!sources.length) return
+    const clones = sources.map((o, i) => ({
+      ...o,
+      id: uid(`dup_${i}`),
+      name: `${o.name} (Copy)`,
+      geometry: o.geometry.clone(),
+      scale: { ...o.scale },
+      pos: { ...o.pos, x: Number((o.pos.x + 1.5).toFixed(2)) },
+      rot: { ...o.rot },
+      isGroupMember: inGroup ? true : o.isGroupMember,
+      isGhostContext: false,
+      groupChildren: inGroup ? undefined : o.groupChildren,
+    }))
     commitObjects((prev) => [...prev, ...clones])
     setSelectedIds(clones.map((c) => c.id))
   }, [selectedIds, editingGroupState, objects, commitObjects])
@@ -852,8 +946,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
                   [axis]: Number((o.pos[axis] + d).toFixed(2)),
                 },
               }
-        }),
-      !editingGroupState
+        })
     )
   }
 
@@ -892,15 +985,10 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         )
         return
       }
-      if (
-        ctrl &&
-        key === "c" &&
-        selectedIds.length > 0 &&
-        !editingGroupState
-      ) {
+      if (ctrl && key === "c" && selectedIds.length > 0) {
         e.preventDefault()
         clipboardRef.current = objects
-          .filter((o) => selectedIds.includes(o.id))
+          .filter((o) => selectedIds.includes(o.id) && !o.isGhostContext)
           .map((o) => ({
             ...o,
             geometry: o.geometry.clone(),
@@ -916,13 +1004,9 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
           }))
         return
       }
-      if (
-        ctrl &&
-        key === "v" &&
-        clipboardRef.current.length > 0 &&
-        !editingGroupState
-      ) {
+      if (ctrl && key === "v" && clipboardRef.current.length > 0) {
         e.preventDefault()
+        const inGroup = Boolean(editingGroupState)
         const pasted = clipboardRef.current.map((o, i) => ({
           ...o,
           id: uid(`paste_${i}`),
@@ -935,6 +1019,9 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
             y: Number((o.pos.y - 1.5).toFixed(2)),
           },
           rot: { ...o.rot },
+          isGroupMember: inGroup ? true : o.isGroupMember,
+          isGhostContext: false,
+          groupChildren: inGroup ? undefined : o.groupChildren,
         }))
         clipboardRef.current = clipboardRef.current.map((o) => ({
           ...o,
@@ -944,15 +1031,12 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         setSelectedIds(pasted.map((c) => c.id))
         return
       }
-      if (ctrl && key === "z" && !e.shiftKey && !editingGroupState) {
+      if (ctrl && key === "z" && !e.shiftKey) {
         e.preventDefault()
         handleUndo()
         return
       }
-      if (
-        ((ctrl && key === "y") || (ctrl && e.shiftKey && key === "z")) &&
-        !editingGroupState
-      ) {
+      if ((ctrl && key === "y") || (ctrl && e.shiftKey && key === "z")) {
         e.preventDefault()
         handleRedo()
         return
@@ -969,12 +1053,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         setToolMode("scale")
         return
       }
-      if (
-        ctrl &&
-        key === "d" &&
-        selectedIds.length > 0 &&
-        !editingGroupState
-      ) {
+      if (ctrl && key === "d" && selectedIds.length > 0) {
         e.preventDefault()
         duplicateSelected()
         return
@@ -1118,7 +1197,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         pos,
         rot: { x: 0, y: 0, z: 0 },
       }
-      commitObjects((prev) => [...prev, item], !editingGroupState)
+      commitObjects((prev) => [...prev, item])
       setSelectedIds([item.id])
     },
     [defaultModelHex, commitObjects, editingGroupState]
@@ -1592,7 +1671,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         pos: { x: 0, y: 0, z: 0 },
         rot: { x: 0, y: 0, z: 0 },
       }
-      commitObjects((prev) => [...prev, svgGroupObj], !editingGroupState)
+      commitObjects((prev) => [...prev, svgGroupObj])
       setSelectedIds([svgGroupObj.id])
     }
     setSvgModal(null)
@@ -1763,6 +1842,7 @@ export function Adivi3DModelViewer(props: AdiviEditorProps) {
         scaleRefModel={scaleRefModel}
         commitObjects={commitObjects}
         historyRef={historyRef}
+        captureHistoryRef={captureHistoryRef}
         syncHistFlags={syncHistFlags}
         lengthUnit={lengthUnit}
         scaleUnit={scaleUnit}

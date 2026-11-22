@@ -19,6 +19,7 @@ export function buildModeGizmo() {
   root.add(moveGroup, rotateGroup, scaleGroup)
 
   const entries: Record<string, { swapToBold: (bold: boolean) => void }> = {}
+  const moveArrowGroups: Partial<Record<"mx" | "my" | "mz", THREE.Group>> = {}
   const ringUpdates: Array<(toCamLocal: THREE.Vector3) => void> = []
   const toCamLocal = new THREE.Vector3()
   const invRootQuat = new THREE.Quaternion()
@@ -55,6 +56,7 @@ export function buildModeGizmo() {
     g.add(shaft, head, hit)
     pointHandleAlong(g, axis === "mx" ? "x" : axis === "my" ? "y" : "z")
     moveGroup.add(g)
+    moveArrowGroups[axis] = g
 
     entries[axis] = {
       swapToBold: (b) => {
@@ -134,12 +136,12 @@ export function buildModeGizmo() {
     })
 
     if (axis === "sall") {
-      const thinBox = new THREE.BoxGeometry(3.2, 3.2, 3.2)
-      const boldBox = new THREE.BoxGeometry(4.4, 4.4, 4.4)
+      const thinBox = new THREE.BoxGeometry(2.08, 2.08, 2.08)
+      const boldBox = new THREE.BoxGeometry(2.86, 2.86, 2.86)
       const box = new THREE.Mesh(thinBox, mat)
       box.renderOrder = 1000
       const hit = new THREE.Mesh(
-        new THREE.BoxGeometry(6.5, 6.5, 6.5),
+        new THREE.BoxGeometry(4.29, 4.29, 4.29),
         new THREE.MeshBasicMaterial({ visible: false })
       )
       hit.userData = { gizmoAxis: axis }
@@ -155,8 +157,8 @@ export function buildModeGizmo() {
 
     const thinShaft = new THREE.CylinderGeometry(0.42, 0.42, 22, 8)
     const boldShaft = new THREE.CylinderGeometry(0.85, 0.85, 22, 8)
-    const thinCube = new THREE.BoxGeometry(2.8, 2.8, 2.8)
-    const boldCube = new THREE.BoxGeometry(3.8, 3.8, 3.8)
+    const thinCube = new THREE.BoxGeometry(1.82, 1.82, 1.82)
+    const boldCube = new THREE.BoxGeometry(2.47, 2.47, 2.47)
 
     const shaft = new THREE.Mesh(thinShaft, mat)
     shaft.position.y = 11
@@ -212,6 +214,14 @@ export function buildModeGizmo() {
       if (m === "rotate") return rotateGroup.children
       if (m === "scale") return scaleGroup.children
       return []
+    },
+    getMoveAxisTipWorld: (axis: "mx" | "my" | "mz") => {
+      const g = moveArrowGroups[axis]
+      if (!g) return null
+      g.updateMatrixWorld(true)
+      const tip = new THREE.Vector3(0, 26 + 2.75, 0)
+      g.localToWorld(tip)
+      return tip
     },
     updatePerspectiveOrientation: (cam: THREE.Camera) => {
       if (!root.visible) return

@@ -173,34 +173,30 @@ export function TopToolbar({
           />
         </button>
 
-        {!editingGroupState && (
-          <>
-            <button
-              type="button"
-              title="Undo (Ctrl+Z)"
-              disabled={!histFlags.canUndo}
-              onClick={handleUndo}
-              style={{
-                ...sqToolBtn(false),
-                opacity: histFlags.canUndo ? 1 : 0.4,
-              }}
-            >
-              <Icon name="undo" size={14} />
-            </button>
-            <button
-              type="button"
-              title="Redo (Ctrl+Y)"
-              disabled={!histFlags.canRedo}
-              onClick={handleRedo}
-              style={{
-                ...sqToolBtn(false),
-                opacity: histFlags.canRedo ? 1 : 0.4,
-              }}
-            >
-              <Icon name="redo" size={14} />
-            </button>
-          </>
-        )}
+        <button
+          type="button"
+          title="Undo (Ctrl+Z)"
+          disabled={!histFlags.canUndo}
+          onClick={handleUndo}
+          style={{
+            ...sqToolBtn(false),
+            opacity: histFlags.canUndo ? 1 : 0.4,
+          }}
+        >
+          <Icon name="undo" size={14} />
+        </button>
+        <button
+          type="button"
+          title="Redo (Ctrl+Y)"
+          disabled={!histFlags.canRedo}
+          onClick={handleRedo}
+          style={{
+            ...sqToolBtn(false),
+            opacity: histFlags.canRedo ? 1 : 0.4,
+          }}
+        >
+          <Icon name="redo" size={14} />
+        </button>
       </div>
 
       {/* OBJECTS TREE PANEL */}

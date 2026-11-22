@@ -39,6 +39,8 @@ export interface TransformBoxRig {
   getHeightCallout: (handleId: string) => HeightCallout | null
   /** Single X or Y span on the base plane for a side face handle. */
   getPlanarFaceCallout: (handleId: string) => PlanarFaceCallout | null
+  /** World-space tip of the blue vertical move arrow (for on-screen label). */
+  getMoveZTipWorld: () => THREE.Vector3 | null
   update: (camera: THREE.Camera) => void
   dispose: () => void
 }
@@ -465,14 +467,19 @@ export function heightEdgeMeasure(
 function depthPair(color: number) {
   const front = new THREE.MeshBasicMaterial({
     color,
+    transparent: false,
+    opacity: 1,
     depthTest: true,
-    depthWrite: false,
+    depthWrite: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
     toneMapped: false,
   })
   const back = new THREE.MeshBasicMaterial({
     color,
     transparent: true,
-    opacity: 0.22,
+    opacity: 0.28,
     depthTest: true,
     depthWrite: false,
     depthFunc: THREE.GreaterDepth,
@@ -596,28 +603,49 @@ export function createTransformBoxRig(): TransformBoxRig {
   const targets: THREE.Object3D[] = []
 
   const unitBox = new THREE.BoxGeometry(1, 1, 1)
+  const boxEdgeGeo = new THREE.EdgesGeometry(unitBox)
   const boxLines = new THREE.LineSegments(
-    new THREE.EdgesGeometry(unitBox),
+    boxEdgeGeo,
     new THREE.LineBasicMaterial({
       color: 0xe2e8f0,
-      transparent: true,
-      opacity: 0.48,
+      transparent: false,
+      opacity: 1,
       depthTest: true,
       depthWrite: false,
       polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    })
+  )
+  const boxLinesBehind = new THREE.LineSegments(
+    boxEdgeGeo,
+    new THREE.LineBasicMaterial({
+      color: 0xe2e8f0,
+      transparent: true,
+      opacity: 0.28,
+      depthTest: true,
+      depthWrite: false,
+      depthFunc: THREE.GreaterDepth,
     })
   )
   unitBox.dispose()
   boxLines.name = "transform-box"
-  boxLines.renderOrder = 4
-  root.add(boxLines)
+  boxLines.renderOrder = 1002
+  boxLinesBehind.name = "transform-box-behind"
+  boxLinesBehind.renderOrder = 1001
+  root.add(boxLinesBehind, boxLines)
 
-  const cubeGeo = new THREE.BoxGeometry(2.7, 2.7, 2.7)
-  const cubeHitGeo = new THREE.BoxGeometry(5.4, 5.4, 5.4)
+  const cubeGeo = new THREE.BoxGeometry(1.76, 1.76, 1.76)
+  const cubeHitGeo = new THREE.BoxGeometry(3.52, 3.52, 3.52)
   const invisible = new THREE.MeshBasicMaterial({ visible: false })
-  disposables.push(cubeGeo, cubeHitGeo, invisible, boxLines.geometry, boxLines.material)
+  disposables.push(
+    cubeGeo,
+    cubeHitGeo,
+    invisible,
+    boxEdgeGeo,
+    boxLines.material,
+    boxLinesBehind.material
+  )
 
   const scaleHandles = scaleSlots().map((slot) => {
     const { front, back } = depthPair(slot.color)
@@ -761,6 +789,7 @@ export function createTransformBoxRig(): TransformBoxRig {
     root.quaternion.copy(frameQuat)
     root.scale.set(1, 1, 1)
     boxLines.scale.set(hx * 2, hy * 2, hz * 2)
+    boxLinesBehind.scale.copy(boxLines.scale)
     boxKey = key
     return true
   }
@@ -848,21 +877,33 @@ export function createTransformBoxRig(): TransformBoxRig {
         edge: planarFaceEdgeMeasure(frame, axis, handle.sign),
       }
     },
+    getMoveZTipWorld: () => {
+      if (targets.length === 0) return null
+      arrow.updateMatrixWorld(true)
+      const tip = new THREE.Vector3(0, Z_SHAFT + Z_HEAD * 0.95, 0)
+      arrow.localToWorld(tip)
+      return tip
+    },
     update: (camera) => {
-      if (!syncFrame() || !root.visible) return
+      if (!syncFrame()) return
 
       root.updateMatrixWorld(true)
       camLocal.copy(camera.position)
       root.worldToLocal(camLocal)
 
-      const hs = manipulatorScale(camera, worldCenter)
+      const hsVisible = root.visible
+      const hs = hsVisible ? manipulatorScale(camera, worldCenter) : 1
       const ext: Extents = { hx, hy, hz }
-      for (const handle of scaleHandles) handle.place(ext, handle.group.position)
+      if (hsVisible) {
+        for (const handle of scaleHandles) handle.place(ext, handle.group.position)
+      }
 
       const signZ = camLocal.z >= 0 ? 1 : -1
       const gap = Math.max(hs * 5.2, 6.5)
       arrow.position.set(0, 0, signZ * (hz + gap))
       arrow.rotation.set(signZ > 0 ? Math.PI / 2 : -Math.PI / 2, 0, 0)
+
+      if (!hsVisible) return
 
       const offset = Math.max(hs * 2.15, 1.6)
       arcZ.group.position.set(-hx - offset, 0, -hz)
