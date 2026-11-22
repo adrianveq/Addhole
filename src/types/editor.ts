@@ -1,7 +1,7 @@
 import * as THREE from "three"
 import * as React from "react"
 
-export type ToolMode = "move" | "rotate" | "scale"
+export type ToolMode = "transform" | "move" | "rotate" | "scale"
 export type DimUnit = "cm" | "%"
 export type BevelMode = "fillet" | "chamfer"
 export type SnapAction = "clipboard" | "file"

@@ -16,6 +16,7 @@ import {
   createBuildPlate,
 } from "../three/sceneHelpers"
 import { buildModeGizmo } from "../three/gizmo"
+import { createTransformBoxRig } from "../three/transformBoxRig"
 import { parse3mfToGeometry, parseStepToGeometry } from "../utils/fileLoaders"
 
 export interface ViewportCanvasProps {
@@ -173,6 +174,10 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     const gizmoCtrl = buildModeGizmo()
     gizmoCtrl.root.visible = false
     scene.add(gizmoCtrl.root)
+
+    const transformRig = createTransformBoxRig()
+    transformRig.root.visible = false
+    scene.add(transformRig.root)
 
     const faceHighlightMesh = new THREE.Mesh(
       new THREE.BufferGeometry(),
@@ -345,6 +350,53 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       const curSelIds: string[] = sceneRef.current?.selectedIds || []
       const primaryId = curSelIds[curSelIds.length - 1] || null
 
+      const startAxisDrag = (axis: string, pivot: THREE.Vector3, id: string) => {
+        if (!meshMap.get(id)) return false
+        controls.enabled = false
+        setIsTurntable(false)
+        const normal =
+          axis === "rx"
+            ? new THREE.Vector3(1, 0, 0)
+            : axis === "ry"
+              ? new THREE.Vector3(0, 1, 0)
+              : new THREE.Vector3(0, 0, 1)
+        dragPlane.setFromNormalAndCoplanarPoint(normal, pivot)
+        raycaster.ray.intersectPlane(dragPlane, hitPt)
+        const startAngle =
+          axis === "rx"
+            ? Math.atan2(hitPt.z - pivot.z, hitPt.y - pivot.y)
+            : axis === "ry"
+              ? Math.atan2(hitPt.x - pivot.x, hitPt.z - pivot.z)
+              : Math.atan2(hitPt.y - pivot.y, hitPt.x - pivot.x)
+        activeDrag = {
+          axis,
+          ids: curSelIds,
+          snapshot: snapshotAll(),
+          pivotWorld: pivot.clone(),
+          startHit: hitPt.clone(),
+          startScreenX: e.clientX,
+          startScreenY: e.clientY,
+          startTransforms: captureStartTransforms(curSelIds),
+          startAngle,
+        }
+        return true
+      }
+
+      if (
+        sceneRef.current?.toolMode === "transform" &&
+        transformRig.root.visible &&
+        primaryId
+      ) {
+        const gHits = raycaster.intersectObjects(transformRig.getHitTargets(), false)
+        const axisHit = gHits.find((h) => h.object.userData?.gizmoAxis)
+        if (
+          axisHit &&
+          startAxisDrag(axisHit.object.userData.gizmoAxis as string, transformRig.root.position, primaryId)
+        ) {
+          return
+        }
+      }
+
       if (gizmoCtrl.root.visible && primaryId) {
         const mode = sceneRef.current?.toolMode || "move"
         const gHits = raycaster.intersectObjects(
@@ -352,49 +404,15 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
           true
         )
         const axisHit = gHits.find((h) => h.object.userData?.gizmoAxis)
-        if (axisHit) {
-          const axis = axisHit.object.userData.gizmoAxis as string
-          const mesh = meshMap.get(primaryId)
-          if (mesh) {
-            controls.enabled = false
-            setIsTurntable(false)
-            const normal =
-              axis === "rx"
-                ? new THREE.Vector3(1, 0, 0)
-                : axis === "ry"
-                  ? new THREE.Vector3(0, 1, 0)
-                  : new THREE.Vector3(0, 0, 1)
-            dragPlane.setFromNormalAndCoplanarPoint(normal, gizmoCtrl.root.position)
-            raycaster.ray.intersectPlane(dragPlane, hitPt)
-            const startAngle =
-              axis === "rx"
-                ? Math.atan2(
-                    hitPt.z - gizmoCtrl.root.position.z,
-                    hitPt.y - gizmoCtrl.root.position.y
-                  )
-                : axis === "ry"
-                  ? Math.atan2(
-                      hitPt.x - gizmoCtrl.root.position.x,
-                      hitPt.z - gizmoCtrl.root.position.z
-                    )
-                  : Math.atan2(
-                      hitPt.y - gizmoCtrl.root.position.y,
-                      hitPt.x - gizmoCtrl.root.position.x
-                    )
-
-            activeDrag = {
-              axis,
-              ids: curSelIds,
-              snapshot: snapshotAll(),
-              pivotWorld: gizmoCtrl.root.position.clone(),
-              startHit: hitPt.clone(),
-              startScreenX: e.clientX,
-              startScreenY: e.clientY,
-              startTransforms: captureStartTransforms(curSelIds),
-              startAngle,
-            }
-            return
-          }
+        if (
+          axisHit &&
+          startAxisDrag(
+            axisHit.object.userData.gizmoAxis as string,
+            gizmoCtrl.root.position,
+            primaryId
+          )
+        ) {
+          return
         }
       }
 
@@ -550,16 +568,26 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         }
 
         let hov: string | null = null
-        if (gizmoCtrl.root.visible) {
-          const mode = sceneRef.current?.toolMode || "move"
-          const gHits = raycaster.intersectObjects(
-            gizmoCtrl.getActiveHitTargets(mode),
-            true
-          )
+        const mode = sceneRef.current?.toolMode || "move"
+        if (mode === "transform" && transformRig.root.visible) {
+          const gHits = raycaster.intersectObjects(transformRig.getHitTargets(), false)
           hov =
-            gHits.find((h) => h.object.userData?.gizmoAxis)?.object.userData
-              ?.gizmoAxis || null
-          gizmoCtrl.setHovered(hov)
+            gHits.find((h) => h.object.userData?.handleId)?.object.userData
+              ?.handleId || null
+          transformRig.setHovered(hov)
+          gizmoCtrl.setHovered(null)
+        } else {
+          transformRig.setHovered(null)
+          if (gizmoCtrl.root.visible) {
+            const gHits = raycaster.intersectObjects(
+              gizmoCtrl.getActiveHitTargets(mode),
+              true
+            )
+            hov =
+              gHits.find((h) => h.object.userData?.gizmoAxis)?.object.userData
+                ?.gizmoAxis || null
+            gizmoCtrl.setHovered(hov)
+          }
         }
         const tabHover =
           plateObj.group.visible &&
@@ -862,6 +890,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       controls.autoRotate = Boolean(sceneRef.current?.isTurntable)
       controls.autoRotateSpeed = 2.2
       controls.update()
+      transformRig.update(activeCam)
       gizmoCtrl.updatePerspectiveOrientation(activeCam)
       renderer.render(scene, activeCam)
     }
@@ -875,6 +904,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
       buildPlate: plateObj.group,
       refGroup,
       gizmoCtrl,
+      transformRig,
       faceHighlightMesh,
       meshMap,
       selectedIds: [] as string[],
@@ -895,6 +925,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         const prevPlateVis = plateObj.group.visible
         const prevRefVis = refGroup.visible
         const prevGizmoVis = gizmoCtrl.root.visible
+        const prevTransformVis = transformRig.root.visible
         const prevHighlightVis = faceHighlightMesh.visible
         const prevMeshStates = new Map<string, { vis: boolean; bracketVis: boolean }>()
 
@@ -914,6 +945,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         refGroup.visible =
           opts.includeModel && Boolean(sceneRef.current?.showScaleRef)
         gizmoCtrl.root.visible = false
+        transformRig.root.visible = false
         faceHighlightMesh.visible = false
         renderer.render(scene, activeCam)
 
@@ -926,6 +958,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
         plateObj.group.visible = prevPlateVis
         refGroup.visible = prevRefVis
         gizmoCtrl.root.visible = prevGizmoVis
+        transformRig.root.visible = prevTransformVis
         faceHighlightMesh.visible = prevHighlightVis
 
         for (const [id, st] of prevMeshStates.entries()) {
@@ -983,6 +1016,7 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
 
     return () => {
       cancelAnimationFrame(raf)
+      transformRig.dispose()
       ro.disconnect()
       dom.removeEventListener("contextmenu", onContextMenu)
       dom.removeEventListener("pointerdown", onPointerDown)
@@ -1079,6 +1113,14 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     st.buildPlate.visible = showGrid
     st.refGroup.visible = showScaleRef
     st.gizmoCtrl.setMode(toolMode)
+    if (toolMode === "transform") {
+      st.gizmoCtrl.root.visible = false
+      st.transformRig.setVisible(st.transformRig.hasTargets())
+    } else {
+      st.transformRig.setHovered(null)
+      st.transformRig.setVisible(false)
+      if (st.transformRig.hasTargets()) st.gizmoCtrl.root.visible = true
+    }
     st.setOrthoMode(isOrtho)
   }, [
     toolMode,
@@ -1307,23 +1349,31 @@ export function ViewportCanvas(props: ViewportCanvasProps) {
     )
     if (activeSelected.length > 0) {
       const combinedBox = new THREE.Box3()
+      const selectedMeshes: THREE.Object3D[] = []
       let hasValid = false
       for (const item of activeSelected) {
         const m = st.meshMap.get(item.id)
         if (m) {
           m.updateMatrixWorld(true)
           combinedBox.expandByObject(m)
+          selectedMeshes.push(m)
           hasValid = true
         }
       }
+      st.transformRig.setTargets(selectedMeshes)
       if (hasValid && !combinedBox.isEmpty()) {
-        st.gizmoCtrl.root.visible = true
         st.gizmoCtrl.root.position.copy(combinedBox.getCenter(new THREE.Vector3()))
+        const showTransform = st.toolMode === "transform"
+        st.gizmoCtrl.root.visible = !showTransform
+        st.transformRig.setVisible(showTransform)
       } else {
         st.gizmoCtrl.root.visible = false
+        st.transformRig.setVisible(false)
       }
     } else {
       st.gizmoCtrl.root.visible = false
+      st.transformRig.setTargets([])
+      st.transformRig.setVisible(false)
     }
   }, [objects, selectedIds, showWireframe, showEdgeHighlight, accent, accentBorder])
 

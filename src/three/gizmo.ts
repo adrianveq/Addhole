@@ -198,8 +198,12 @@ export function buildModeGizmo() {
     setHovered: (ax: string | null) => {
       for (const [k, e] of Object.entries(entries)) e.swapToBold(k === ax)
     },
-    getActiveHitTargets: (m: ToolMode) =>
-      (m === "move" ? moveGroup : m === "rotate" ? rotateGroup : scaleGroup).children,
+    getActiveHitTargets: (m: ToolMode) => {
+      if (m === "move") return moveGroup.children
+      if (m === "rotate") return rotateGroup.children
+      if (m === "scale") return scaleGroup.children
+      return []
+    },
     updatePerspectiveOrientation: (cam: THREE.Camera) => {
       if (!root.visible) return
       const s = (cam as THREE.OrthographicCamera).isOrthographicCamera

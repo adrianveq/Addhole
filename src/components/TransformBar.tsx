@@ -58,6 +58,7 @@ export function TransformBar({
         }}
       >
         {[
+          { id: "transform" as const, label: "Transform", key: "", icon: "transform" },
           { id: "move" as const, label: "Move", key: "M", icon: "move" },
           { id: "rotate" as const, label: "Rotate", key: "R", icon: "rotate" },
           { id: "scale" as const, label: "Scale", key: "S", icon: "scale" },
@@ -67,7 +68,7 @@ export function TransformBar({
             <button
               key={t.id}
               type="button"
-              title={`${t.label} (${t.key})`}
+              title={t.key ? `${t.label} (${t.key})` : t.label}
               onClick={() => setToolMode(t.id)}
               style={{
                 height: 30,
